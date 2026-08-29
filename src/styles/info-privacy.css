@@ -1,0 +1,9 @@
+.privacy-info{display:block}
+.privacy-heading{position:relative;margin-bottom:20px}
+.privacy-heading h2{margin-bottom:8px}
+.privacy-heading .badge{position:absolute;right:0;top:0}
+.privacy-row{display:flex;gap:12px;padding:14px 0;border-top:1px solid #363a3d}
+.privacy-row>span{font-size:16px}
+.privacy-row h3{margin:0 0 5px;color:#e8e9e9;font-size:13px;font-weight:600}
+.privacy-row p{margin:0;font-size:12px;line-height:1.55}
+@media(max-width:800px){.privacy-heading .badge{position:static;display:inline-block;margin-top:8px}}

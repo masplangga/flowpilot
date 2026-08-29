@@ -1,0 +1,4 @@
+html,body,#root{height:100%;overflow:hidden}
+.app{height:100vh;min-height:0;overflow:hidden}
+.app aside{height:100%;overflow:hidden}
+.app>.content{height:100%;overflow-y:auto;overflow-x:hidden}

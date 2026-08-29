@@ -1,0 +1,10 @@
+/* Restored License Gate presentation from the earlier logo-F version. */
+.gate{background:#131619;display:block;min-height:100vh;padding:0}
+.gate-card{width:100%;max-width:540px;min-height:100vh;margin:auto;padding:46px 34px;background:#1a1d21;border:1px solid #363a3d;border-radius:0;box-shadow:none;display:flex;flex-direction:column;justify-content:center}
+.gate .brand{margin:0 0 62px;position:static}
+.gate h1{font-size:30px;font-weight:500;margin:12px 0;color:#e8e9e9}
+.gate p{font-size:16px;margin:0 0 28px}
+.gate input{height:50px;font-size:16px}
+.gate .wide{margin-top:20px}
+.gate .link{font-size:16px;margin:26px auto 35px}
+.gate small{font-size:11px;line-height:1.55}
