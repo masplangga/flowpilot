@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Flowpilot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.flowpilot.desktop",
   "build": { "beforeDevCommand": "npm run dev", "devUrl": "http://localhost:5173", "beforeBuildCommand": "npm run build", "frontendDist": "../dist" },
   "app": { "windows": [{ "title": "Flowpilot", "width": 540, "height": 620, "minWidth": 540, "minHeight": 620, "resizable": false, "center": true, "decorations": true, "theme": "Dark" }], "security": { "csp": null } },
   "bundle": { "active": true, "targets": "nsis", "createUpdaterArtifacts": true, "icon": ["icons/icon.ico"], "windows": { "nsis": { "installerIcon": "icons/icon.ico", "uninstallerIcon": "icons/icon.ico", "installerHooks": "installer-hooks.nsh" } } },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBRjU4NUUwRkZCOTMwQ0QKUldUTk1Mbi80SVgxR2tGWndrN2U3dUdJVW1vWkhGSnA2TFd1NFdzd0FQaldRRmZGbngyVkZSeG4K",
-      "endpoints": [],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4ODMzNjRDOTAwNzZCNEIKUldSTGF3ZVFURGFEbUp4Tk9xbDNESmRTbFF1TUlFakxJQWlkdis0VlhxcHY2MUtkQytYUmhIalYK",
+      "endpoints": ["https://github.com/masplangga/flowpilot/releases/latest/download/latest.json"],
       "windows": { "installMode": "passive" }
     }
   }
