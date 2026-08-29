@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag to build
         required: true
-        default: v1.1.1
+        default: v1.2.0
 
 permissions:
   contents: write
