@@ -149,7 +149,12 @@ pub fn open<R: Runtime>(
                 .min_by_key(|(_, last_used)| **last_used)
                 .map(|(id, _)| id.clone());
             if let Some(evicted_id) = eviction {
-                if let Some(webview) = app.get_webview(&webview_label(&evicted_id)) {
+                let evicted_label = webview_label(&evicted_id);
+                crate::webview_download_bridge::cancel_for_webview(
+                    &app.state::<crate::webview_download_bridge::DownloadState>(),
+                    &evicted_label,
+                );
+                if let Some(webview) = app.get_webview(&evicted_label) {
                     webview.close().map_err(|e| e.to_string())?;
                 }
                 cached.remove(&evicted_id);
@@ -163,11 +168,11 @@ pub fn open<R: Runtime>(
             .parse()
             .map_err(|_| "invalid Google Flow URL")?,
     );
-    let builder = WebviewBuilder::new(requested_label, url)
+    let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
+        .initialization_script_for_all_frames(crate::webview_download_bridge::INIT_SCRIPT)
         .on_navigation(|url| url.scheme() == "https")
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
-
     window
         .add_child(
             builder,
@@ -175,6 +180,18 @@ pub fn open<R: Runtime>(
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
+
+    #[cfg(all(windows, feature = "diag"))]
+    if let Some(webview) = app.get_webview(&requested_label) {
+        let diagnostic_label = requested_label.clone();
+        webview
+            .with_webview(move |platform| {
+                if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
+                    let _ = crate::webview_diagnostics::attach(&native, &diagnostic_label);
+                }
+            })
+            .map_err(|e| e.to_string())?;
+    }
 
     *state
         .active_account_id
@@ -256,6 +273,10 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         .map_err(|_| "webview state unavailable")?;
     let label = webview_label(&account_id);
 
+    crate::webview_download_bridge::cancel_for_webview(
+        &app.state::<crate::webview_download_bridge::DownloadState>(),
+        &label,
+    );
     if let Some(webview) = app.get_webview(&label) {
         webview.close().map_err(|e| e.to_string())?;
     }

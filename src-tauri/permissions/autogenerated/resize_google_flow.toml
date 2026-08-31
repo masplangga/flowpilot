@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resize-google-flow"
+description = "Enables the resize_google_flow command without any pre-configured scope."
+commands.allow = ["resize_google_flow"]
+
+[[permission]]
+identifier = "deny-resize-google-flow"
+description = "Denies the resize_google_flow command without any pre-configured scope."
+commands.deny = ["resize_google_flow"]

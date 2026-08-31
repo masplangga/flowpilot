@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-expand-main-window"
+description = "Enables the expand_main_window command without any pre-configured scope."
+commands.allow = ["expand_main_window"]
+
+[[permission]]
+identifier = "deny-expand-main-window"
+description = "Denies the expand_main_window command without any pre-configured scope."
+commands.deny = ["expand_main_window"]

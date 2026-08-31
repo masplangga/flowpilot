@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-google-flow"
+description = "Enables the close_google_flow command without any pre-configured scope."
+commands.allow = ["close_google_flow"]
+
+[[permission]]
+identifier = "deny-close-google-flow"
+description = "Denies the close_google_flow command without any pre-configured scope."
+commands.deny = ["close_google_flow"]

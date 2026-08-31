@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-begin-blob-download"
+description = "Enables the begin_blob_download command without any pre-configured scope."
+commands.allow = ["begin_blob_download"]
+
+[[permission]]
+identifier = "deny-begin-blob-download"
+description = "Denies the begin_blob_download command without any pre-configured scope."
+commands.deny = ["begin_blob_download"]

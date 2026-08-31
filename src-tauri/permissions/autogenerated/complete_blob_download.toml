@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-complete-blob-download"
+description = "Enables the complete_blob_download command without any pre-configured scope."
+commands.allow = ["complete_blob_download"]
+
+[[permission]]
+identifier = "deny-complete-blob-download"
+description = "Denies the complete_blob_download command without any pre-configured scope."
+commands.deny = ["complete_blob_download"]

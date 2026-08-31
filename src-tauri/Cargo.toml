@@ -1,6 +1,6 @@
 [package]
 name = "flowpilot"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 
 [lib]
@@ -19,9 +19,16 @@ keyring = { version = "3", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+diag = []
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

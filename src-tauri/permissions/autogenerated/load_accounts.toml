@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-accounts"
+description = "Enables the load_accounts command without any pre-configured scope."
+commands.allow = ["load_accounts"]
+
+[[permission]]
+identifier = "deny-load-accounts"
+description = "Denies the load_accounts command without any pre-configured scope."
+commands.deny = ["load_accounts"]

@@ -3,5 +3,22 @@
   "identifier": "default",
   "description": "Default desktop permissions for Flowpilot",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default", "process:allow-restart"]
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:allow-restart",
+    "allow-expand-main-window",
+    "allow-open-external-url",
+    "allow-open-google-flow",
+    "allow-close-google-flow",
+    "allow-resize-google-flow",
+    "allow-remove-google-flow-account",
+    "allow-get-device-id",
+    "allow-get-license-state",
+    "allow-activate-license",
+    "allow-validate-license",
+    "allow-clear-license-state",
+    "allow-load-accounts",
+    "allow-save-accounts"
+  ]
 }
