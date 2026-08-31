@@ -16,9 +16,9 @@ use tauri::{AppHandle, Runtime, State, Webview};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(all(windows, feature = "diag"))]
-fn diag(event: &str, detail: &str) { crate::webview_diagnostics::command_event(event, detail); }
+pub(crate) fn diag(event: &str, detail: &str) { crate::webview_diagnostics::command_event(event, detail); }
 #[cfg(not(all(windows, feature = "diag")))]
-fn diag(_event: &str, _detail: &str) {}
+pub(crate) fn diag(_event: &str, _detail: &str) {}
 
 struct Pending {
     owner: String,
@@ -88,6 +88,7 @@ fn partial_path(destination: &Path) -> PathBuf {
 }
 
 const AUTO_SAVE_TO_DOWNLOADS: bool = true;
+const ENABLE_NATIVE_SAVE_AS: bool = true;
 
 fn downloads_destination(filename: &str) -> Result<PathBuf, String> {
     let profile = std::env::var_os("USERPROFILE").ok_or("user profile unavailable")?;
@@ -148,6 +149,23 @@ pub async fn begin_blob_download<R: Runtime>(
 
     let suggested_name = safe_filename(&filename);
     diag("begin_blob_download:FilenamePrepared", "");
+    if ENABLE_NATIVE_SAVE_AS {
+        let last_folder = state.last_folder.lock().map_err(|_| "download folder state unavailable")?.clone();
+        diag("begin_blob_download:DialogRequestSent", "dedicated-thread");
+        let selected = crate::dialog_thread_experiment::request_dialog(last_folder, suggested_name.clone()).await?;
+        diag("begin_blob_download:DialogReturned", if selected.is_some() { "raw=Some(path)" } else { "raw=None" });
+        let Some(mut destination) = selected else {
+            diag("DownloadCancelledByUser", "");
+            return Ok(false);
+        };
+        if destination.extension().is_none() { destination.set_extension("mp4"); }
+        let partial = partial_path(&destination);
+        let file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(&partial).map_err(|e| e.to_string())?;
+        if let Some(parent) = destination.parent() { *state.last_folder.lock().map_err(|_| "download folder state unavailable")? = Some(parent.to_path_buf()); }
+        state.pending.lock().map_err(|_| "download state unavailable")?.insert(id, Pending { owner, destination, partial, file: Some(file), bytes: 0, failed: false });
+        diag("begin_blob_download:DialogStateInserted", "");
+        return Ok(true);
+    }
     if AUTO_SAVE_TO_DOWNLOADS {
         let destination = downloads_destination(&suggested_name)?;
         let partial = partial_path(&destination);
@@ -357,7 +375,7 @@ pub fn cancel_for_webview(state: &DownloadState, label: &str) {
 }
 
 pub const INIT_SCRIPT: &str = r#"(() => {
-  const ENABLE_NATIVE_SAVE_AS = false;
+  const ENABLE_NATIVE_SAVE_AS = true;
   const AUTO_SAVE_TO_DOWNLOADS = true;
   if (window.__flowpilotBlobBridgeInstalled) return;
   window.__flowpilotBlobBridgeInstalled = true;
@@ -397,7 +415,6 @@ pub const INIT_SCRIPT: &str = r#"(() => {
       (href.startsWith('blob:') || href.startsWith('https:'));
     if (this.download) {
       const scheme = href.split(':', 1)[0] || 'other';
-      console.info('[Flowpilot download diagnostic]', { event: 'anchor-click', scheme, hasHref: Boolean(href), hrefSameAsPrevious: href === lastDownloadHref });
       lastDownloadHref = href;
     }
     if ((ENABLE_NATIVE_SAVE_AS || AUTO_SAVE_TO_DOWNLOADS) && isVideoDownload) {

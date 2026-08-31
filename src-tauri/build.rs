@@ -12,6 +12,7 @@ fn main() {
                 "write_blob_download_chunk",
                 "complete_blob_download",
                 "cancel_blob_download",
+                "debug_trigger_isolated_dialog",
                 "get_device_id",
                 "get_license_state",
                 "activate_license",

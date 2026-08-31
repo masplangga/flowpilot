@@ -17,6 +17,9 @@
 /dist
 /src-tauri/target
 /src-tauri/gen
+/target-experiment/
+/src-tauri/target-experiment/
+flowpilot_diag.log
 
 # misc
 .DS_Store

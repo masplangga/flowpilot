@@ -5,6 +5,7 @@ mod account_store;
 mod license_store;
 mod webview_manager;
 mod webview_download_bridge;
+mod dialog_thread_experiment;
 #[cfg(all(windows, feature = "diag"))]
 mod webview_diagnostics;
 
@@ -119,6 +120,7 @@ fn expand_main_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dialog_thread_experiment::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -135,6 +137,7 @@ pub fn run() {
             webview_download_bridge::write_blob_download_chunk,
             webview_download_bridge::complete_blob_download,
             webview_download_bridge::cancel_blob_download,
+            dialog_thread_experiment::debug_trigger_isolated_dialog,
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,
             license_store::get_device_id,

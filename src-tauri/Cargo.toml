@@ -21,6 +21,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 base64 = "0.22"
+rfd = "0.16"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
@@ -29,6 +30,7 @@ windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Sys
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 diag = []
+dialog-thread-experiment = []
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

@@ -20,5 +20,6 @@
     "allow-clear-license-state",
     "allow-load-accounts",
     "allow-save-accounts"
+    ,"allow-debug-trigger-isolated-dialog"
   ]
 }
