@@ -20,7 +20,6 @@ type Account = {
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
-const DIALOG_THREAD_EXPERIMENT = import.meta.env.VITE_DIALOG_THREAD_EXPERIMENT === "1"
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
@@ -1165,7 +1164,6 @@ function FlowShell({
           <button className="fullscreen" onClick={onToggleFullView}>
             {fullView ? "Exit Full View" : "Full View"}
           </button>
-          {DIALOG_THREAD_EXPERIMENT && <button className="fullscreen" onClick={() => { void invoke("debug_trigger_isolated_dialog", { filename: "Flowpilot_Test.mp4" }) }}>Debug Save As</button>}
         </div>
       </div>
       <div ref={containerRef} className="webview-host" aria-label="Google Flow WebView" />
