@@ -176,3 +176,9 @@ aside button.active, aside button:hover { background: #b6f09c; color: #263520; }
 .custom-drag-layer { position: fixed; inset: 0; pointer-events: none; z-index: 9999; }
 .drag-preview-card { position: absolute; width: min(310px, calc(100vw - 32px)); box-sizing: border-box; padding: 24px; background: #131619; border: 1px solid #b6f09c99; border-radius: 16px; opacity: .97; box-shadow: 0 26px 60px #0009, 0 0 0 1px #b6f09c22; transform-origin: center; will-change: transform; }
 .drag-preview-card .more { color: #7d8992; }
+ .provider-tabs { display: flex; gap: 8px; margin: 18px 0 0; }
+.provider-tabs button { min-height: 42px; padding: 0 18px; border: 1px solid #39404a; border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
+.provider-tabs button.active { background: #b8f79a; color: #101510; border-color: #b8f79a; }
+.dialog .provider-tabs { margin-bottom: 12px; flex-wrap: wrap; }
+.dialog .provider-tabs button { flex: 1 1 0; min-width: 0; }
+.dialog .dialog-actions { margin-top: 26px; }

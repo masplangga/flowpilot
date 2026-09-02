@@ -36,10 +36,11 @@ async fn open_google_flow(
     y: f64,
     width: f64,
     height: f64,
+    provider: Option<String>,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::open(&operation_app, account_id, x, y, width, height)
+        webview_manager::open(&operation_app, account_id, x, y, width, height, provider.unwrap_or_else(|| "google-flow".into()))
     })
     .await
 }
@@ -48,10 +49,11 @@ async fn open_google_flow(
 async fn close_google_flow(
     app: tauri::AppHandle,
     account_id: Option<String>,
+    provider: Option<String>,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::close(&operation_app, account_id)
+        webview_manager::close(&operation_app, account_id, provider)
     })
     .await
 }

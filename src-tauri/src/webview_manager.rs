@@ -7,11 +7,14 @@ use tauri::webview::WebviewBuilder;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 
 const GOOGLE_FLOW_URL: &str = "https://flow.google";
+const DOLA_URL: &str = "https://www.dola.com/chat/";
+const MIGOO_URL: &str = "https://migoo.ai/";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
+    active_provider: Mutex<Option<String>>,
     visible: Mutex<bool>,
     cached_accounts: Mutex<HashMap<String, u64>>,
     usage_counter: Mutex<u64>,
@@ -22,6 +25,7 @@ impl Default for WebviewManager {
     fn default() -> Self {
         Self {
             active_account_id: Mutex::new(None),
+            active_provider: Mutex::new(None),
             visible: Mutex::new(false),
             cached_accounts: Mutex::new(HashMap::new()),
             usage_counter: Mutex::new(0),
@@ -30,8 +34,8 @@ impl Default for WebviewManager {
     }
 }
 
-fn webview_label(account_id: &str) -> String {
-    format!("{WEBVIEW_LABEL_PREFIX}-{account_id}")
+fn webview_label(account_id: &str, provider: Option<&str>) -> String {
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", _ => WEBVIEW_LABEL_PREFIX })
 }
 
 fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String> {
@@ -91,6 +95,7 @@ pub fn open<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    provider: String,
 ) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let operation = state
@@ -103,7 +108,7 @@ pub fn open<R: Runtime>(
         .get_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
 
-    let requested_label = webview_label(&account_id);
+    let requested_label = format!("{}-{}", match provider.as_str() { "dola" => "dola", "migoo" => "migoo", _ => "google-flow" }, account_id);
     let active_account = state
         .active_account_id
         .lock()
@@ -111,7 +116,8 @@ pub fn open<R: Runtime>(
         .clone();
     if let Some(active_id) = active_account.as_deref() {
         if active_id != account_id {
-            if let Some(webview) = app.get_webview(&webview_label(active_id)) {
+            let active_provider = state.active_provider.lock().map_err(|_| "webview state unavailable")?.clone();
+            if let Some(webview) = app.get_webview(&webview_label(active_id, active_provider.as_deref())) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
         }
@@ -129,6 +135,7 @@ pub fn open<R: Runtime>(
             .active_account_id
             .lock()
             .map_err(|_| "webview state unavailable")? = Some(account_id.clone());
+        *state.active_provider.lock().map_err(|_| "webview state unavailable")? = Some(provider.clone());
         *state
             .visible
             .lock()
@@ -149,7 +156,7 @@ pub fn open<R: Runtime>(
                 .min_by_key(|(_, last_used)| **last_used)
                 .map(|(id, _)| id.clone());
             if let Some(evicted_id) = eviction {
-                let evicted_label = webview_label(&evicted_id);
+                let evicted_label = webview_label(&evicted_id, None);
                 crate::webview_download_bridge::cancel_for_webview(
                     &app.state::<crate::webview_download_bridge::DownloadState>(),
                     &evicted_label,
@@ -164,7 +171,7 @@ pub fn open<R: Runtime>(
 
     let profile = profile_path(app, &account_id)?;
     let url = WebviewUrl::External(
-        GOOGLE_FLOW_URL
+        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, _ => GOOGLE_FLOW_URL }
             .parse()
             .map_err(|_| "invalid Google Flow URL")?,
     );
@@ -193,6 +200,7 @@ pub fn open<R: Runtime>(
             .map_err(|e| e.to_string())?;
     }
 
+    *state.active_provider.lock().map_err(|_| "webview state unavailable")? = Some(provider);
     *state
         .active_account_id
         .lock()
@@ -206,7 +214,7 @@ pub fn open<R: Runtime>(
     Ok(())
 }
 
-pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Result<(), String> {
+pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, provider: Option<String>) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let operation = state
         .operation
@@ -222,7 +230,8 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Resu
             .as_deref()
             .map_or(true, |requested_id| requested_id == active_id)
         {
-            if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
+            let active_provider = provider.or_else(|| state.active_provider.lock().ok().and_then(|p| p.clone()));
+            if let Some(webview) = app.get_webview(&webview_label(&active_id, active_provider.as_deref())) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
         }
@@ -253,7 +262,8 @@ pub fn resize<R: Runtime>(
     if active_account.as_deref() != Some(account_id.as_str()) {
         return Ok(());
     }
-    if let Some(webview) = app.get_webview(&webview_label(&account_id)) {
+    let active_provider = state.active_provider.lock().map_err(|_| "webview state unavailable")?.clone();
+    if let Some(webview) = app.get_webview(&webview_label(&account_id, active_provider.as_deref())) {
         webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -271,7 +281,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         .operation
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&account_id);
+    let label = webview_label(&account_id, None);
 
     crate::webview_download_bridge::cancel_for_webview(
         &app.state::<crate::webview_download_bridge::DownloadState>(),

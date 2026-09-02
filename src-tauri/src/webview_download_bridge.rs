@@ -43,7 +43,7 @@ pub struct DownloadState {
 
 fn validate_caller<R: Runtime>(webview: &Webview<R>) -> Result<String, String> {
     let label = webview.label().to_string();
-    if label.starts_with("google-flow-") {
+    if label.starts_with("google-flow-") || label.starts_with("dola-") || label.starts_with("migoo-") {
         Ok(label)
     } else {
         Err("download command rejected for this WebView".into())
@@ -327,6 +327,7 @@ pub fn complete_blob_download<R: Runtime>(
         pending.remove(&id).ok_or("download is no longer active")?
     };
     if item.failed || item.bytes == 0 {
+        diag("complete_blob_download:RejectedEmpty", &format!("bytes={} failed={}", item.bytes, item.failed));
         return Err("download did not produce a valid file".into());
     }
     let file = item.file.as_mut().ok_or("download file is closed")?;
@@ -338,6 +339,7 @@ pub fn complete_blob_download<R: Runtime>(
     let mut header = [0_u8; 12];
     file.read_exact(&mut header)
         .map_err(|_| "download is not a valid MP4 file".to_string())?;
+    diag("complete_blob_download:Header", &format!("bytes={} signature={:02x?}", item.bytes, &header[..8]));
     if &header[4..8] != b"ftyp" {
         return Err("download is not a valid MP4 file".into());
     }
@@ -419,7 +421,7 @@ pub const INIT_SCRIPT: &str = r#"(() => {
     }
     if ((ENABLE_NATIVE_SAVE_AS || AUTO_SAVE_TO_DOWNLOADS) && isVideoDownload) {
       const id = `blob-${crypto.randomUUID()}`;
-      const blobPromise = fetch(href).then(response => {
+      const blobPromise = fetch(href, { credentials: 'include' }).then(response => {
         if (!response.ok) throw new Error('blob fetch failed');
         return response.blob();
       });

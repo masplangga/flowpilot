@@ -7,10 +7,14 @@
     "urls": [
       "https://flow.google",
       "https://flow.google/*",
-      "https://labs.google/*"
+      "https://labs.google/*",
+      "https://www.dola.com",
+      "https://www.dola.com/*",
+      "https://migoo.ai",
+      "https://migoo.ai/*"
     ]
   },
-  "webviews": ["google-flow-*"],
+  "webviews": ["google-flow-*", "dola-*", "migoo-*"],
   "permissions": [
     "allow-begin-blob-download",
     "allow-write-blob-download-chunk",

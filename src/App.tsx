@@ -8,7 +8,9 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
+type Provider = "google-flow" | "dola" | "migoo"
 type Account = {
+  provider: Provider
   id: string
   name: string
   email: string | null
@@ -20,24 +22,29 @@ type Account = {
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
+const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : "Google Flow"
+const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : (avatarUrl || "/google-flow.png")
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
 const licenseExpiryLabel = (state: LicenseState | null) => state?.lifetime ? "Lifetime" : state?.expires_at ? new Date(state.expires_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "—"
 const plans = [
   {
+    provider: "google-flow",
     name: "30 Days",
     originalPrice: "Rp50,000",
     price: "Rp25,000",
     description: "Flowpilot access for 30 days",
   },
   {
+    provider: "google-flow",
     name: "1 Year",
     originalPrice: "Rp149.000",
     price: "Rp99.000",
     description: "Flowpilot access for 1 year",
   },
   {
+    provider: "google-flow",
     name: "Lifetime",
     originalPrice: "Rp249.000",
     price: "Rp149.000",
@@ -46,6 +53,7 @@ const plans = [
 ]
 const starter: Account[] = [
   {
+    provider: "google-flow",
     id: "main",
     name: "Flow Main",
     email: null,
@@ -55,6 +63,7 @@ const starter: Account[] = [
     order: 0,
   },
   {
+    provider: "google-flow",
     id: "client",
     name: "Client A",
     email: null,
@@ -64,6 +73,7 @@ const starter: Account[] = [
     order: 1,
   },
   {
+    provider: "google-flow",
     id: "backup",
     name: "Backup",
     email: null,
@@ -82,6 +92,7 @@ export default function App() {
   const [deviceId, setDeviceId] = useState("")
   const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [provider, setProvider] = useState<Provider>("google-flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [profile, setProfile] = useState<{
     name: string
@@ -113,6 +124,7 @@ export default function App() {
   const [menu, setMenu] = useState<string | null>(null)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [newAccountName, setNewAccountName] = useState("")
+  const [newAccountProvider, setNewAccountProvider] = useState<Provider>("google-flow")
   const [addAccountError, setAddAccountError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragPoint, setDragPoint] = useState({ x: 0, y: 0 })
@@ -164,6 +176,7 @@ export default function App() {
   const handleAddAccount = () => {
     setNewAccountName("")
     setAddAccountError("")
+    setNewAccountProvider(provider)
     setAddAccountOpen(true)
   }
   const createAccount = () => {
@@ -178,9 +191,10 @@ export default function App() {
     }
     const a: Account = {
       id: crypto.randomUUID(),
+      provider: newAccountProvider,
       name,
       email: null,
-      avatarUrl: "/google-flow.png",
+      avatarUrl: providerAvatar(newAccountProvider, null),
       avatar: "NF",
       favorite: false,
       order: accounts.length,
@@ -195,13 +209,16 @@ export default function App() {
   }
   useEffect(() => {
     if (!licensed || accountsLoaded) return
-    void loadAccounts().then((saved) => setAccounts(saved as Account[])).finally(() => setAccountsLoaded(true))
+    void loadAccounts().then((saved) => setAccounts((saved as Account[]).map((account) => ({ ...account, provider: account.provider || "google-flow" })))).finally(() => setAccountsLoaded(true))
   }, [licensed, accountsLoaded])
   useEffect(() => {
     if (licensed && accountsLoaded) void saveAccounts(accounts)
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
     const activeStillExists = active !== null && accounts.some((account) => account.id === active.id)
+    if (view !== "flow" && active) {
+      void invoke("close_google_flow", { accountId: active.id, provider: active.provider })
+    }
     if (view === "flow" && !activeStillExists) {
       setActive(null)
       setFullView(false)
@@ -213,6 +230,7 @@ export default function App() {
     }
   }, [active, accounts, view, fullView, navigatorOpen])
   const favoriteCount = accounts.filter((a) => a.favorite).length
+  const providerAccounts = accounts.filter((a) => (a.provider || "google-flow") === provider)
   const visible = useMemo(
     () =>
       accounts.filter(
@@ -382,7 +400,8 @@ export default function App() {
         <main className="content flow-content">
           <FlowShell
             account={active}
-            accounts={accounts}
+            accounts={accounts.filter((candidate) => (candidate.provider || "google-flow") === active.provider)}
+            provider={active.provider}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
             onToggleFullView={() => {
@@ -429,7 +448,7 @@ export default function App() {
                 ? "Updates"
                 : view === "info"
                 ? "How to Use Flowpilot"
-                : "Google Flow Accounts"}
+                : `${providerLabel(provider)} Accounts`}
             </h1>
             <p>
               {view === "settings"
@@ -442,19 +461,27 @@ export default function App() {
                 ? "Keep Flowpilot up to date with the latest version."
                 : view === "info"
                 ? "A quick guide to managing your Google Flow accounts."
-                : "Manage your Google Flow accounts in one place."}
+                : `Manage your ${providerLabel(provider)} accounts in one place.`}
             </p>
             {view === "accounts" && (
               <div className="account-count">
-                {accounts.length}{" "}
-                {accounts.length === 1 ? "Account" : "Accounts"}
+                {providerAccounts.length}{" "}
+                {providerAccounts.length === 1 ? "Account" : "Accounts"}
               </div>
             )}
             {view === "favorites" && (
               <div className="account-count">{favoriteCount} Favorites</div>
             )}
+            {view === "accounts" && (
+              <div className="provider-tabs">
+                <button className={provider === "google-flow" ? "active" : ""} onClick={() => setProvider("google-flow")}>Google Flow</button>
+                <button className={provider === "dola" ? "active" : ""} onClick={() => setProvider("dola")}>Dola</button>
+                <button className={provider === "migoo" ? "active" : ""} onClick={() => setProvider("migoo")}>Migoo</button>
+              </div>
+            )}
           </div>
           {view === "accounts" && (
+            <>
             <div className="header-actions">
               <div className="search">
                 ⌕
@@ -468,6 +495,7 @@ export default function App() {
                 ＋ Add Account
               </button>
             </div>
+            </>
           )}
         </header>
         {view === "settings" ? (
@@ -481,7 +509,7 @@ export default function App() {
         ) : (
           <>
             <div className="grid">
-              {displayed.map((a) => (
+              {displayed.filter((a) => view === "favorites" || (a.provider || "google-flow") === provider).map((a) => (
                 <Card
                   key={a.id}
                   a={a}
@@ -533,7 +561,8 @@ export default function App() {
           <div className="overlay">
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
-              <p>Enter a name for this Google Flow account.</p>
+              <p>Choose a provider and enter an account name.</p>
+              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "migoo" ? "active" : ""} onClick={() => setNewAccountProvider("migoo")}>Migoo</button></div>
               <input
                 autoFocus
                 value={newAccountName}
@@ -964,14 +993,14 @@ function Card({
       </div>
       <div className="avatar large">
         <img
-          src={a.avatarUrl || "/google-flow.png"}
-          alt="Google Flow account"
+          src={providerAvatar(a.provider, a.avatarUrl)}
+          alt={`${providerLabel(a.provider)} account`}
           draggable={false}
         />
       </div>
       <h2>{a.name}</h2>
       <button className="primary wide" onClick={onOpen}>
-        Open Google Flow <span>→</span>
+        Open {providerLabel(a.provider)} <span>→</span>
       </button>
       <div className="card-links">
         <button onClick={onRename}>✎ Rename</button>
@@ -986,9 +1015,9 @@ function DragPreview({ account, point, offset }: { account: Account | null; poin
     <div className="custom-drag-layer" aria-hidden="true">
       <article className="drag-preview-card" style={{ transform: `translate3d(${point.x - offset.x}px, ${point.y - offset.y}px, 0) scale(1.04) rotate(2deg)` }}>
         <div className="card-top"><span className={`star ${account.favorite ? "fav" : ""}`}>{account.favorite ? "★" : "☆"}</span><span className="more">•••</span></div>
-        <div className="avatar large"><img src={account.avatarUrl || "/google-flow.png"} alt="" /></div>
+        <div className="avatar large"><img src={providerAvatar(account.provider, account.avatarUrl)} alt="" /></div>
         <h2>{account.name}</h2>
-        <div className="primary wide">Open Google Flow <span>→</span></div>
+        <div className="primary wide">Open {providerLabel(account.provider)} <span>→</span></div>
       </article>
     </div>
   )
@@ -1074,6 +1103,7 @@ function FlowShell({
   onToggleNavigator,
   onSelectAccount,
   onBack,
+  provider,
 }: {
   account: Account
   accounts: Account[]
@@ -1083,8 +1113,10 @@ function FlowShell({
   onToggleNavigator: () => void
   onSelectAccount: (account: Account) => void
   onBack: () => void
+  provider: Provider
 }) {
-  const [status, setStatus] = useState("Loading Google Flow...")
+  const providerName = providerLabel(provider)
+  const [status, setStatus] = useState(`Loading ${providerName}...`)
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let cancelled = false
@@ -1092,24 +1124,25 @@ function FlowShell({
     if (!rect) return
     invoke("open_google_flow", {
       accountId: account.id,
+      provider,
       x: rect.left,
       y: rect.top,
       width: rect.width,
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) setStatus("Google Flow ready")
+        if (!cancelled) setStatus(`${providerName} ready`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
       })
       .catch((error) => {
         console.error("Google Flow WebView failed", error)
-        if (!cancelled) setStatus("Unable to open Google Flow. Please try again.")
+        if (!cancelled) setStatus(`Unable to open ${providerName}. Please try again.`)
       })
     return () => {
       cancelled = true
       void invoke("close_google_flow", { accountId: account.id })
     }
-  }, [account.id])
+  }, [account.id, provider, providerName])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -1142,7 +1175,7 @@ function FlowShell({
         <div className="flow-controls">
           <div className="mini-navigator">
             <button className="navigator-trigger" onClick={onToggleNavigator} aria-expanded={navigatorOpen}>
-              <img src={account.avatarUrl || "/google-flow.png"} alt="" />
+              <img src={providerAvatar(account.provider, account.avatarUrl)} alt="" />
               <span>{account.name}</span>
               <span aria-hidden="true">▾</span>
             </button>
@@ -1154,7 +1187,7 @@ function FlowShell({
                     className={candidate.id === account.id ? "selected" : ""}
                     onClick={() => onSelectAccount(candidate)}
                   >
-                    <img src={candidate.avatarUrl || "/google-flow.png"} alt="" />
+                    <img src={providerAvatar(candidate.provider, candidate.avatarUrl)} alt="" />
                     <span>{candidate.name}</span>
                   </button>
                 ))}
@@ -1166,7 +1199,7 @@ function FlowShell({
           </button>
         </div>
       </div>
-      <div ref={containerRef} className="webview-host" aria-label="Google Flow WebView" />
+      <div ref={containerRef} className="webview-host" aria-label={`${providerName} WebView`} />
     </div>
   )
 }
