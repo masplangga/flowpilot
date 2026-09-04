@@ -451,6 +451,8 @@ pub const INIT_SCRIPT: &str = r#"(() => {
   });
 })();"#;
 
+pub const GOOGLE_FLOW_RESET_SCRIPT: &str = "void 0;";
+
 #[cfg(test)]
 mod tests {
     use super::{partial_path, safe_filename, validate_id};

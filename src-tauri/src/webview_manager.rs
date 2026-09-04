@@ -5,12 +5,54 @@ use std::sync::Mutex;
 use tauri::path::BaseDirectory;
 use tauri::webview::WebviewBuilder;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
+#[cfg(windows)]
+use webview2_com::{DownloadStartingEventHandler, take_pwstr};
+#[cfg(windows)]
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_4, ICoreWebView2DownloadStartingEventArgs};
+#[cfg(windows)]
+use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 
 const GOOGLE_FLOW_URL: &str = "https://flow.google";
 const DOLA_URL: &str = "https://www.dola.com/chat/";
 const MIGOO_URL: &str = "https://migoo.ai/";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
+
+#[cfg(windows)]
+fn attach_google_flow_download_handler(webview: &ICoreWebView2) -> Result<(), String> {
+    let webview4 = webview.cast::<ICoreWebView2_4>().map_err(|e| e.to_string())?;
+    let mut token = 0;
+    unsafe {
+        webview4.add_DownloadStarting(
+            &DownloadStartingEventHandler::create(Box::new(
+                move |_, args: Option<ICoreWebView2DownloadStartingEventArgs>| {
+                    let Some(args) = args else { return Ok(()); };
+                    let mut suggested = PWSTR::null();
+                    let filename = if args.ResultFilePath(&mut suggested).is_ok() {
+                        let path = take_pwstr(suggested);
+                        std::path::Path::new(&path).file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| "Flowpilot_download.mp4".into())
+                    } else { "Flowpilot_download.mp4".into() };
+                    let Some(mut destination) = rfd::FileDialog::new().set_file_name(&filename).save_file() else {
+                        args.SetCancel(true)?;
+                        return Ok(());
+                    };
+                    if destination.extension().is_none() {
+                        destination.set_extension("mp4");
+                    }
+                    let destination = HSTRING::from(destination.as_os_str());
+                    args.SetResultFilePath(PCWSTR(destination.as_ptr()))?;
+                    args.SetHandled(true)?;
+                    Ok(())
+                },
+            )),
+            &mut token,
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
@@ -177,16 +219,29 @@ pub fn open<R: Runtime>(
     );
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
-        .initialization_script_for_all_frames(crate::webview_download_bridge::INIT_SCRIPT)
+        .initialization_script_for_all_frames(if provider == "google-flow" {
+            crate::webview_download_bridge::GOOGLE_FLOW_RESET_SCRIPT
+        } else {
+            crate::webview_download_bridge::INIT_SCRIPT
+        })
         .on_navigation(|url| url.scheme() == "https")
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
-    window
+    let webview = window
         .add_child(
             builder,
             tauri::LogicalPosition::new(x, y),
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    if provider.as_str() == "google-flow" {
+        webview.with_webview(|platform| {
+            if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
+                let _ = attach_google_flow_download_handler(&native);
+            }
+        }).map_err(|e| e.to_string())?;
+    }
 
     #[cfg(all(windows, feature = "diag"))]
     if let Some(webview) = app.get_webview(&requested_label) {
