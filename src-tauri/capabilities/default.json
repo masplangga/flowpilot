@@ -19,7 +19,13 @@
     "allow-validate-license",
     "allow-clear-license-state",
     "allow-load-accounts",
-    "allow-save-accounts"
+    "allow-save-accounts",
+    "allow-list-prompts",
+    "allow-create-prompt",
+    "allow-update-prompt",
+    "allow-delete-prompt",
+    "allow-toggle-prompt-pinned",
+    "allow-set-prompt-card-color"
     ,"allow-debug-trigger-isolated-dialog"
   ]
 }

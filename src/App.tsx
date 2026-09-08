@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { invoke } from "@tauri-apps/api/core"
@@ -19,6 +19,8 @@ type Account = {
   favorite: boolean
   order: number
 }
+type PromptItem = { id: string; title: string; prompt: string; category: string; pinned?: boolean; cardColor?: string; created_at: string; updated_at: string; order?: number }
+const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "blue", label: "Dark Blue" }, { id: "purple", label: "Dark Purple" }, { id: "green", label: "Dark Green" }, { id: "orange", label: "Dark Orange" }, { id: "red", label: "Dark Red" }]
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
@@ -115,6 +117,7 @@ export default function App() {
     | "updates"
     | "info"
     | "settings"
+    | "prompts"
     | "flow"
   >("accounts")
   const [active, setActive] = useState<Account | null>(null)
@@ -130,8 +133,10 @@ export default function App() {
   const [dragPoint, setDragPoint] = useState({ x: 0, y: 0 })
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
+  const [prompts, setPrompts] = useState<PromptItem[]>([])
   const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null)
   useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(!saved?.status){setLicenseChecking(false);return} setLicenseState(saved); const validated=await invoke<LicenseState>("validate_license"); setLicenseState(validated); setLicensed(true); await invoke("expand_main_window"); const w=getCurrentWindow(); await w.show(); await w.setFocus() } catch (error) { setLicenseError(typeof error === "string" ? error : "Server Unavailable") } finally { setLicenseChecking(false) } })() }, [])
+  useEffect(() => { if (licensed) void invoke<PromptItem[]>("list_prompts").then(setPrompts).catch(() => setPrompts([])) }, [licensed])
   const dragSourceRef = useRef<HTMLElement | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragSourceIdRef = useRef<string | null>(null)
@@ -354,10 +359,10 @@ export default function App() {
   const openLicensePurchase = () =>
     invoke("open_external_url", { url: LICENSE_PURCHASE_URL })
   if (licenseChecking && !licensed)
-    return <div className="gate"><div className="gate-card"><Brand /><h1>Checking your license</h1><p>Connecting securely to Flowpilot License Server…</p></div></div>
+    return <div className="gate" onContextMenu={(event) => event.preventDefault()}><div className="gate-card"><Brand /><h1>Checking your license</h1><p>Connecting securely to Flowpilot License Server…</p></div></div>
   if (!licensed)
     return (
-      <div className="gate">
+      <div className="gate" onContextMenu={(event) => event.preventDefault()}>
         <div className="gate-card">
           <Brand />
           <h1>Enter your license</h1>
@@ -424,9 +429,9 @@ export default function App() {
       </div>
     )
   return (
-    <div className="app">
+    <div className="app" onContextMenu={(event) => event.preventDefault()}>
       <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} />
-      <main className="content">
+      <main className={`content ${view === "prompts" ? "prompts-content" : ""}`}>
         <header>
           <div>
             <div className="eyebrow">
@@ -435,13 +440,15 @@ export default function App() {
                 ? "SETTINGS"
                 : view === "favorites"
                 ? "FAVORITES"
-                : view.toUpperCase()}
+                : view === "prompts" ? "PROMPTS" : view.toUpperCase()}
             </div>
             <h1>
               {view === "settings"
                 ? "Settings"
                 : view === "favorites"
                 ? "Favorite Accounts"
+                : view === "prompts"
+                ? "PROMPTS"
                 : view === "license"
                 ? "License"
                 : view === "updates"
@@ -455,6 +462,8 @@ export default function App() {
                 ? "Keep Flowpilot personal, private, and ready to use."
                 : view === "favorites"
                 ? "Your favorite Google Flow accounts in one place."
+                : view === "prompts"
+                ? "Create, organize, and reuse your prompts."
                 : view === "license"
                 ? "Choose the Flowpilot license that fits your needs."
                 : view === "updates"
@@ -498,7 +507,9 @@ export default function App() {
             </>
           )}
         </header>
-        {view === "settings" ? (
+        {view === "prompts" ? (
+          <PromptLibrary items={prompts} onChange={setPrompts} />
+        ) : view === "settings" ? (
           <Settings profile={profile} onAvatarChange={updateProfileAvatar} />
         ) : view === "license" ? (
           <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
@@ -600,6 +611,77 @@ function Brand() {
     </div>
   )
 }
+function PromptLibrary({ items, onChange }: { items: PromptItem[]; onChange: (items: PromptItem[]) => void }) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("all");
+
+  const [editing, setEditing] = useState<PromptItem | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [detail, setDetail] = useState<PromptItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PromptItem | null>(null);
+  const [colorPickerId, setColorPickerId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const [form, setForm] = useState({ title: "", category: "", prompt: "" });
+  const [pinningIds, setPinningIds] = useState<Set<string>>(new Set());
+  const promptCardRefs = useRef(new Map<string, HTMLElement>());
+  const previousCardRects = useRef(new Map<string, DOMRect>());
+  const flipFrame = useRef<number | null>(null);
+  const pinningIdsRef = useRef(new Set<string>());
+  const categories = Array.from(new Set(items.map((item) => item.category).filter(Boolean)));
+  const ordered = [...items].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (a.order ?? items.indexOf(a)) - (b.order ?? items.indexOf(b)));
+  const shown = ordered.filter((item) => (category === "all" || item.category === category) && `${item.title} ${item.prompt}`.toLowerCase().includes(query.toLowerCase()));
+  useEffect(() => { if (!detail) return; const detailBox = document.querySelector<HTMLElement>(".prompt-detail"); const actions = detailBox?.parentElement?.querySelector<HTMLElement>(".dialog-actions"); if (!actions) return; const button = document.createElement("button"); button.className = "secondary prompt-detail-copy"; button.type = "button"; button.textContent = "Copy"; const onClick = () => { void navigator.clipboard?.writeText(detail.prompt).then(() => { button.textContent = "Copied"; window.setTimeout(() => { button.textContent = "Copy"; }, 1200); }); }; button.addEventListener("click", onClick); actions.insertBefore(button, actions.firstChild); return () => { button.removeEventListener("click", onClick); button.remove(); }; }, [detail]);
+  useLayoutEffect(() => {
+    if (flipFrame.current !== null) cancelAnimationFrame(flipFrame.current);
+    const nextRects = new Map<string, DOMRect>();
+    promptCardRefs.current.forEach((element, id) => nextRects.set(id, element.getBoundingClientRect()));
+    const moved: HTMLElement[] = [];
+    nextRects.forEach((nextRect, id) => {
+      const previousRect = previousCardRects.current.get(id);
+      const element = promptCardRefs.current.get(id);
+      if (!previousRect || !element) return;
+      const x = previousRect.left - nextRect.left;
+      const y = previousRect.top - nextRect.top;
+      if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return;
+      element.style.transition = "none";
+      element.style.transform = `translate(${x}px, ${y}px)`;
+      moved.push(element);
+    });
+    previousCardRects.current = nextRects;
+    if (moved.length === 0) return;
+    flipFrame.current = requestAnimationFrame(() => {
+      moved.forEach((element) => {
+        element.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+        element.style.transform = "";
+      });
+      flipFrame.current = null;
+    });
+  });
+
+  const togglePinned = async (item: PromptItem) => {
+    if (pinningIdsRef.current.size > 0) return;
+    const nextPinningIds = new Set(pinningIdsRef.current).add(item.id);
+    pinningIdsRef.current = nextPinningIds;
+    setPinningIds(nextPinningIds);
+    try {
+      const next = await invoke<PromptItem[]>("toggle_prompt_pinned", { id: item.id });
+      onChange(next);
+    } catch (error) {
+      console.error("Prompt pin failed", error);
+    } finally {
+      const remainingPinningIds = new Set(pinningIdsRef.current);
+      remainingPinningIds.delete(item.id);
+      pinningIdsRef.current = remainingPinningIds;
+      setPinningIds(remainingPinningIds);
+    }
+  };
+  const save = async () => { if (!form.title.trim() || !form.prompt.trim()) { setSaveError("Title and prompt are required."); return; } setSaveError(""); try { const next = editing ? await invoke<PromptItem>("update_prompt", { id: editing.id, ...form }) : await invoke<PromptItem>("create_prompt", form); onChange(editing ? items.map((item) => item.id === next.id ? next : item) : [...items, next]); setEditing(null); setEditorOpen(false); setForm({ title: "", category: "", prompt: "" }); } catch (error) { const message = typeof error === "string" ? error : error instanceof Error ? error.message : "Unable to save prompt."; setSaveError(message); console.error("Prompt save failed", error); } };
+  const openEditor = (item?: PromptItem) => { setEditing(item || null); setEditorOpen(true); setForm(item ? { title: item.title, category: item.category, prompt: item.prompt } : { title: "", category: "", prompt: "" }); };
+  const setCardColor = async (item: PromptItem, cardColor: string) => { try { const next = await invoke<PromptItem>("set_prompt_card_color", { id: item.id, cardColor }); onChange(items.map((old) => old.id === next.id ? next : old)); setColorPickerId(null); } catch (error) { console.error("Prompt card color failed", error); } };
+  const confirmDelete = async () => { if (!pendingDelete) return; const id = pendingDelete.id; try { await invoke("delete_prompt", { id }); onChange(items.filter((old) => old.id !== id)); setPendingDelete(null); } catch (error) { console.error("Prompt delete failed", error); } };
+  return <section className="feature-page prompts-library"><div className="prompt-toolbar"><button className="primary" onClick={() => openEditor()}>＋ New Prompt</button><select className="prompt-category-select" value={category} onChange={(e) => setCategory(e.target.value)}><option value="all">All Categories</option>{categories.map((value) => <option key={value}>{value}</option>)}</select><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search prompts..." /></div>{shown.length > 0 && <div className="prompt-grid">{shown.map((item) => <article ref={(element) => { if (element) promptCardRefs.current.set(item.id, element); else promptCardRefs.current.delete(item.id); }} className={`prompt-card prompt-card-color-${item.cardColor || "default"}`} key={item.id} onClick={() => setDetail(item)}><button className={`prompt-pin-button ${item.pinned ? "is-pinned" : ""}`} type="button" title={item.pinned ? "Unpin prompt" : "Pin prompt"} aria-label={item.pinned ? "Unpin prompt" : "Pin prompt"} aria-busy={pinningIds.size > 0} disabled={pinningIds.size > 0} onClick={(e) => { e.stopPropagation(); void togglePinned(item); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l-1 5 3 3v2h-4v8l-2-2-2 2v-8H6v-2l3-3-1-5Z" /></svg></button><h3>{item.title}</h3><small>{item.category || "Uncategorized"}</small><p className="prompt-preview">{item.prompt}</p><div className="prompt-card-actions"><button onClick={(e) => { e.stopPropagation(); void navigator.clipboard?.writeText(item.prompt); }}>Copy</button> <button onClick={(e) => { e.stopPropagation(); openEditor(item); }}>Edit</button> <button onClick={(e) => { e.stopPropagation(); setPendingDelete(item); }}>Delete</button> <button className="prompt-color-trigger" title="Choose card color" aria-label="Choose card color" onClick={(e) => { e.stopPropagation(); setColorPickerId(colorPickerId === item.id ? null : item.id); }}>Color</button></div>{colorPickerId === item.id && <div className="prompt-color-menu" onClick={(e) => e.stopPropagation()} role="group" aria-label="Card colors">{PROMPT_CARD_COLORS.map((color) => <button key={color.id} className={item.cardColor === color.id || (!item.cardColor && color.id === "default") ? "selected" : ""} title={color.label} aria-label={color.label} onClick={() => void setCardColor(item, color.id)}><span className={`prompt-color-swatch prompt-color-swatch-${color.id}`} /></button>)}</div>}</article>)}</div>}{editorOpen && <div className="overlay"><div className="dialog"><h2>{editing ? "Edit Prompt" : "New Prompt"}</h2><input placeholder="Title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /><input placeholder="Category" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /><textarea placeholder="Prompt" value={form.prompt} onChange={(e) => setForm({ ...form, prompt: e.target.value })} />{saveError && <p className="dialog-error">{saveError}</p>}<div className="dialog-actions"><button className="secondary" onClick={() => { setEditing(null); setEditorOpen(false); setSaveError(""); setForm({ title: "", category: "", prompt: "" }) }}>Cancel</button><button className="primary" onClick={() => void save()}>Save</button></div></div></div>}{detail && <div className="overlay"><div className="dialog"><h2>{detail.title}</h2><small className="prompt-detail-meta">{detail.category || "Uncategorized"}</small><div className="prompt-detail">{detail.prompt}</div><div className="dialog-actions"><button className="secondary" onClick={() => setDetail(null)}>Close</button></div></div></div>}{pendingDelete && <div className="overlay"><div className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-prompt-title"><h2 id="delete-prompt-title">Delete {pendingDelete.title}?</h2><p>This removes the prompt card from Flowpilot. Your saved prompt is not affected.</p><div className="dialog-actions"><button className="secondary" onClick={() => setPendingDelete(null)}>Cancel</button><button className="danger" onClick={() => void confirmDelete()}>Delete prompt</button></div></div></div>}</section>;
+}
+
 function Sidebar({
   view,
   setView,
@@ -612,7 +694,7 @@ function Sidebar({
   licenseState: LicenseState | null
 }) {
   return (
-    <aside>
+    <aside onContextMenu={(event) => event.preventDefault()}>
       <Brand />
       <div className="side-label">WORKSPACE</div>
       <button
@@ -626,6 +708,9 @@ function Sidebar({
         onClick={() => setView("favorites")}
       >
         <SidebarIcon name="favorites" /> <span>Favorites</span>
+      </button>
+      <button className={view === "prompts" ? "active" : ""} onClick={() => setView("prompts")}>
+        <SidebarIcon name="prompts" /> <span>Prompt Library</span>
       </button>
       <div className="rule" />
       <div className="side-label">GENERAL</div>
@@ -673,7 +758,7 @@ function Sidebar({
     </aside>
   )
 }
-function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" }) {
+function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" | "prompts" }) {
   const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
   const paths = {
     accounts: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
@@ -682,6 +767,7 @@ function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "u
     updates: <><path d="M20 11a8 8 0 0 0-14.7-4L4 9" /><path d="M4 4v5h5M4 13a8 8 0 0 0 14.7 4L20 15" /><path d="M20 20v-5h-5" /></>,
     info: <><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></>,
     settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="10" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
+    prompts: <><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
 }

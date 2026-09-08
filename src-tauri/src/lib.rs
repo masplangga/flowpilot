@@ -5,6 +5,7 @@ mod account_store;
 mod license_store;
 mod webview_manager;
 mod webview_download_bridge;
+mod prompt_store;
 mod dialog_thread_experiment;
 #[cfg(all(windows, feature = "diag"))]
 mod webview_diagnostics;
@@ -139,6 +140,12 @@ pub fn run() {
             webview_download_bridge::write_blob_download_chunk,
             webview_download_bridge::complete_blob_download,
             webview_download_bridge::cancel_blob_download,
+            prompt_store::list_prompts,
+            prompt_store::create_prompt,
+            prompt_store::update_prompt,
+            prompt_store::delete_prompt,
+            prompt_store::toggle_prompt_pinned,
+            prompt_store::set_prompt_card_color,
             dialog_thread_experiment::debug_trigger_isolated_dialog,
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,

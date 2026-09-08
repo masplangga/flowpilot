@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-prompt-card-color"
+description = "Enables the set_prompt_card_color command without any pre-configured scope."
+commands.allow = ["set_prompt_card_color"]
+
+[[permission]]
+identifier = "deny-set-prompt-card-color"
+description = "Denies the set_prompt_card_color command without any pre-configured scope."
+commands.deny = ["set_prompt_card_color"]
