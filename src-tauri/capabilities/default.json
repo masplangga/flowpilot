@@ -26,6 +26,5 @@
     "allow-delete-prompt",
     "allow-toggle-prompt-pinned",
     "allow-set-prompt-card-color"
-    ,"allow-debug-trigger-isolated-dialog"
   ]
 }

@@ -8,17 +8,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Mutex,
-    panic::AssertUnwindSafe,
 };
 
 use base64::Engine;
-use tauri::{AppHandle, Runtime, State, Webview};
-use tauri_plugin_dialog::DialogExt;
-
-#[cfg(all(windows, feature = "diag"))]
-pub(crate) fn diag(event: &str, detail: &str) { crate::webview_diagnostics::command_event(event, detail); }
-#[cfg(not(all(windows, feature = "diag")))]
-pub(crate) fn diag(_event: &str, _detail: &str) {}
+use tauri::{Runtime, State, Webview};
 
 struct Pending {
     owner: String,
@@ -87,23 +80,8 @@ fn partial_path(destination: &Path) -> PathBuf {
     PathBuf::from(format!("{}.part", destination.display()))
 }
 
-const AUTO_SAVE_TO_DOWNLOADS: bool = true;
 const ENABLE_NATIVE_SAVE_AS: bool = true;
 
-fn downloads_destination(filename: &str) -> Result<PathBuf, String> {
-    let profile = std::env::var_os("USERPROFILE").ok_or("user profile unavailable")?;
-    let dir = PathBuf::from(profile).join("Downloads");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let base = dir.join(filename);
-    if !base.exists() { return Ok(base); }
-    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("Flowpilot_Video");
-    let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
-    for n in 1..10000 {
-        let candidate = dir.join(format!("{stem} ({n}).{ext}"));
-        if !candidate.exists() { return Ok(candidate); }
-    }
-    Err("could not choose download filename".into())
-}
 
 #[cfg(windows)]
 fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
@@ -129,17 +107,13 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn begin_blob_download<R: Runtime>(
-    app: AppHandle<R>,
     webview: Webview<R>,
     state: State<'_, DownloadState>,
     id: String,
     filename: String,
 ) -> Result<bool, String> {
-    diag("TauriCommand:Entered", &format!("command=begin_blob_download id={id}"));
     let owner = validate_caller(&webview)?;
-    diag("begin_blob_download:CallerValidated", "");
     validate_id(&id)?;
-    diag("begin_blob_download:IdValidated", "");
     {
         let pending = state.pending.lock().map_err(|_| "download state unavailable")?;
         if pending.contains_key(&id) {
@@ -148,14 +122,10 @@ pub async fn begin_blob_download<R: Runtime>(
     }
 
     let suggested_name = safe_filename(&filename);
-    diag("begin_blob_download:FilenamePrepared", "");
     if ENABLE_NATIVE_SAVE_AS {
         let last_folder = state.last_folder.lock().map_err(|_| "download folder state unavailable")?.clone();
-        diag("begin_blob_download:DialogRequestSent", "dedicated-thread");
         let selected = crate::dialog_thread_experiment::request_dialog(last_folder, suggested_name.clone()).await?;
-        diag("begin_blob_download:DialogReturned", if selected.is_some() { "raw=Some(path)" } else { "raw=None" });
         let Some(mut destination) = selected else {
-            diag("DownloadCancelledByUser", "");
             return Ok(false);
         };
         if destination.extension().is_none() { destination.set_extension("mp4"); }
@@ -163,61 +133,10 @@ pub async fn begin_blob_download<R: Runtime>(
         let file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(&partial).map_err(|e| e.to_string())?;
         if let Some(parent) = destination.parent() { *state.last_folder.lock().map_err(|_| "download folder state unavailable")? = Some(parent.to_path_buf()); }
         state.pending.lock().map_err(|_| "download state unavailable")?.insert(id, Pending { owner, destination, partial, file: Some(file), bytes: 0, failed: false });
-        diag("begin_blob_download:DialogStateInserted", "");
         return Ok(true);
     }
-    if AUTO_SAVE_TO_DOWNLOADS {
-        let destination = downloads_destination(&suggested_name)?;
-        let partial = partial_path(&destination);
-        let file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(&partial).map_err(|e| e.to_string())?;
-        state.pending.lock().map_err(|_| "download state unavailable")?.insert(id, Pending { owner, destination, partial, file: Some(file), bytes: 0, failed: false });
-        diag("begin_blob_download:AutoSaveStateInserted", "folder=Downloads");
-        return Ok(true);
-    }
-    let last_folder = state
-        .last_folder
-        .lock()
-        .map_err(|_| "download folder state unavailable")?
-        .clone();
-
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<Result<Option<PathBuf>, String>>(1);
-    let dialog_app = app.clone();
-    let dialog_thread = std::thread::current();
-    diag("begin_blob_download:BeforeDialog", &format!("thread_id={:?} thread_name={}", dialog_thread.id(), dialog_thread.name().unwrap_or("unnamed")));
-    let dialog_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        app.run_on_main_thread(move || {
-            let dialog_thread = std::thread::current();
-            diag("begin_blob_download:DialogThread", &format!("thread_id={:?} thread_name={}", dialog_thread.id(), dialog_thread.name().unwrap_or("unnamed")));
-            let mut dialog = dialog_app.dialog().file().set_file_name(suggested_name);
-            if let Some(folder) = last_folder {
-                dialog = dialog.set_directory(folder);
-            }
-            diag("BeforeSaveFileCall", "");
-            dialog.save_file(move |path| {
-                diag("DialogCallback:Entered", "");
-                let raw = path.as_ref().map(|p| p.to_string());
-                let _ = sender.send(Ok(path.map(|path| PathBuf::from(path.to_string()))));
-                diag("begin_blob_download:DialogCallback", if raw.is_some() { "raw=Some(path)" } else { "raw=None" });
-            });
-            diag("AfterSaveFileCallScheduled", "");
-        })
-    }));
-    if let Err(payload) = dialog_result {
-        let message = payload.downcast_ref::<&str>().copied().or_else(|| payload.downcast_ref::<String>().map(String::as_str)).unwrap_or("non-string panic");
-        diag("PanicCaught", &format!("message={message}"));
-        return Err(format!("dialog panic: {message}"));
-    }
-    dialog_result.unwrap()
-    .map_err(|error| error.to_string())?;
-    diag("begin_blob_download:DialogRequested", "");
-    let raw_result = tauri::async_runtime::spawn_blocking(move || receiver.recv().ok())
-        .await
-        .map_err(|error| error.to_string())?;
-    let raw_result = raw_result.ok_or_else(|| "dialog callback produced no result".to_string())?;
-    if let Err(message) = &raw_result { diag("begin_blob_download:DialogError", message); }
-    let selected = raw_result?;
-    diag("begin_blob_download:DialogReturned", if selected.is_some() { "raw=Some(path)" } else { "raw=None(user-cancel-or-api-none)" });
-    let Some(mut destination) = selected else {
+    let last_folder = state.last_folder.lock().map_err(|_| "download folder state unavailable")?.clone();
+    let Some(mut destination) = crate::dialog_thread_experiment::request_dialog(last_folder, suggested_name.clone()).await? else {
         return Ok(false);
     };
     if destination.extension().is_none() {
@@ -231,7 +150,7 @@ pub async fn begin_blob_download<R: Runtime>(
         .truncate(true)
         .open(&partial)
         .map_err(|error| error.to_string())?;
-    diag("begin_blob_download:PartialOpened", "");
+
 
     if let Some(parent) = destination.parent() {
         *state
@@ -254,21 +173,7 @@ pub async fn begin_blob_download<R: Runtime>(
                 failed: false,
             },
         );
-    diag("begin_blob_download:StateInserted", "");
     Ok(true)
-}
-
-#[cfg(all(windows, feature = "diag"))]
-#[tauri::command]
-pub fn diagnostic_save_file<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    diag("DiagnosticSaveFile:Entered", "");
-    app.clone().run_on_main_thread(move || {
-        diag("DiagnosticSaveFile:BeforeSaveFileCall", "");
-        app.dialog().file().save_file(move |path| {
-            diag("DiagnosticSaveFile:DialogCallbackEntered", if path.is_some() { "raw=Some(path)" } else { "raw=None" });
-        });
-        diag("DiagnosticSaveFile:AfterSaveFileCallScheduled", "");
-    }).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -278,14 +183,12 @@ pub fn write_blob_download_chunk<R: Runtime>(
     id: String,
     data: String,
 ) -> Result<(), String> {
-    diag("TauriCommand:Entered", &format!("command=write_blob_download_chunk id={id}"));
     let owner = validate_caller(&webview)?;
-    diag("write_blob_download_chunk:CallerValidated", "");
     validate_id(&id)?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|_| "invalid download chunk")?;
-    diag("write_blob_download_chunk:ChunkDecoded", "");
+
     let mut pending = state.pending.lock().map_err(|_| "download state unavailable")?;
     let item = pending.get_mut(&id).ok_or("download is no longer active")?;
     if item.owner != owner {
@@ -304,7 +207,6 @@ pub fn write_blob_download_chunk<R: Runtime>(
         return Err(error.to_string());
     }
     item.bytes += decoded.len() as u64;
-    diag("write_blob_download_chunk:ChunkWritten", "");
     Ok(())
 }
 
@@ -314,9 +216,7 @@ pub fn complete_blob_download<R: Runtime>(
     state: State<'_, DownloadState>,
     id: String,
 ) -> Result<(), String> {
-    diag("TauriCommand:Entered", &format!("command=complete_blob_download id={id}"));
     let owner = validate_caller(&webview)?;
-    diag("complete_blob_download:CallerValidated", "");
     validate_id(&id)?;
     let mut item = {
         let mut pending = state.pending.lock().map_err(|_| "download state unavailable")?;
@@ -327,26 +227,23 @@ pub fn complete_blob_download<R: Runtime>(
         pending.remove(&id).ok_or("download is no longer active")?
     };
     if item.failed || item.bytes == 0 {
-        diag("complete_blob_download:RejectedEmpty", &format!("bytes={} failed={}", item.bytes, item.failed));
         return Err("download did not produce a valid file".into());
     }
     let file = item.file.as_mut().ok_or("download file is closed")?;
     file.flush().map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
-    diag("complete_blob_download:FileFlushed", "");
+
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
     let mut header = [0_u8; 12];
     file.read_exact(&mut header)
         .map_err(|_| "download is not a valid MP4 file".to_string())?;
-    diag("complete_blob_download:Header", &format!("bytes={} signature={:02x?}", item.bytes, &header[..8]));
+
     if &header[4..8] != b"ftyp" {
         return Err("download is not a valid MP4 file".into());
     }
     drop(item.file.take());
-    diag("complete_blob_download:Mp4Validated", "");
     atomic_replace(&item.partial, &item.destination)?;
-    diag("complete_blob_download:Renamed", "");
     Ok(())
 }
 
@@ -356,7 +253,6 @@ pub fn cancel_blob_download<R: Runtime>(
     state: State<'_, DownloadState>,
     id: String,
 ) -> Result<(), String> {
-    diag("TauriCommand:Entered", &format!("command=cancel_blob_download id={id}"));
     let owner = validate_caller(&webview)?;
     validate_id(&id)?;
     let mut pending = state.pending.lock().map_err(|_| "download state unavailable")?;
@@ -366,7 +262,6 @@ pub fn cancel_blob_download<R: Runtime>(
         }
     }
     pending.remove(&id);
-    diag("cancel_blob_download:StateRemoved", "");
     Ok(())
 }
 
@@ -376,9 +271,39 @@ pub fn cancel_for_webview(state: &DownloadState, label: &str) {
     }
 }
 
+pub const GEMINI_BLOB_SCRIPT: &str = r#"(() => {
+  if (window.__flowpilotGeminiBlobDownloadInstalled) return;
+  window.__flowpilotGeminiBlobDownloadInstalled = true;
+  const originalBlob = Response.prototype.blob;
+  Response.prototype.blob = function (...args) {
+    const response = this;
+    const result = originalBlob.apply(response, args);
+    return result.then(blob => {
+      try {
+        const responseUrl = response.url || '';
+        const contentType = response.headers.get('content-type') || '';
+        if (!responseUrl.includes('contribution.usercontent.google.com/download') || !contentType.toLowerCase().includes('video/mp4')) {
+          return blob;
+        }
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'video.mp4';
+        anchor.style.display = 'none';
+        (document.body || document.documentElement).appendChild(anchor);
+        anchor.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          anchor.remove();
+        }, 5000);
+      } catch (_) {}
+      return blob;
+    });
+  };
+})();"#;
+
 pub const INIT_SCRIPT: &str = r#"(() => {
   const ENABLE_NATIVE_SAVE_AS = true;
-  const AUTO_SAVE_TO_DOWNLOADS = true;
   if (window.__flowpilotBlobBridgeInstalled) return;
   window.__flowpilotBlobBridgeInstalled = true;
   const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
@@ -419,7 +344,7 @@ pub const INIT_SCRIPT: &str = r#"(() => {
       const scheme = href.split(':', 1)[0] || 'other';
       lastDownloadHref = href;
     }
-    if ((ENABLE_NATIVE_SAVE_AS || AUTO_SAVE_TO_DOWNLOADS) && isVideoDownload) {
+    if (ENABLE_NATIVE_SAVE_AS && isVideoDownload) {
       const id = `blob-${crypto.randomUUID()}`;
       const blobPromise = fetch(href, { credentials: 'include' }).then(response => {
         if (!response.ok) throw new Error('blob fetch failed');
@@ -450,8 +375,6 @@ pub const INIT_SCRIPT: &str = r#"(() => {
     for (const id of pending.keys()) void cancel(id);
   });
 })();"#;
-
-pub const GOOGLE_FLOW_RESET_SCRIPT: &str = "void 0;";
 
 #[cfg(test)]
 mod tests {

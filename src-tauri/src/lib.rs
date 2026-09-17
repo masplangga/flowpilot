@@ -7,8 +7,7 @@ mod webview_manager;
 mod webview_download_bridge;
 mod prompt_store;
 mod dialog_thread_experiment;
-#[cfg(all(windows, feature = "diag"))]
-mod webview_diagnostics;
+
 
 async fn run_on_ui_thread<F, T>(app: &tauri::AppHandle, operation: F) -> Result<T, String>
 where
@@ -146,9 +145,7 @@ pub fn run() {
             prompt_store::delete_prompt,
             prompt_store::toggle_prompt_pinned,
             prompt_store::set_prompt_card_color,
-            dialog_thread_experiment::debug_trigger_isolated_dialog,
-            #[cfg(all(windows, feature = "diag"))]
-            webview_download_bridge::diagnostic_save_file,
+
             license_store::get_device_id,
             license_store::get_license_state,
             license_store::activate_license,

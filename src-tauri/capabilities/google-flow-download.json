@@ -11,10 +11,12 @@
       "https://www.dola.com",
       "https://www.dola.com/*",
       "https://migoo.ai",
-      "https://migoo.ai/*"
+      "https://migoo.ai/*",
+      "https://gemini.google.com",
+      "https://gemini.google.com/*"
     ]
   },
-  "webviews": ["google-flow-*", "dola-*", "migoo-*"],
+  "webviews": ["google-flow-*", "dola-*", "migoo-*", "gemini-*"],
   "permissions": [
     "allow-begin-blob-download",
     "allow-write-blob-download-chunk",

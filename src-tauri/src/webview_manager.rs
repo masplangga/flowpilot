@@ -15,11 +15,83 @@ use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 const GOOGLE_FLOW_URL: &str = "https://flow.google";
 const DOLA_URL: &str = "https://www.dola.com/chat/";
 const MIGOO_URL: &str = "https://migoo.ai/";
+const GEMINI_URL: &str = "https://gemini.google.com/app";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
 
 #[cfg(windows)]
+fn extension_for_mime(mime: &str) -> Option<&'static str> {
+    match mime.trim().to_ascii_lowercase().split(';').next().unwrap_or("") {
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
 fn attach_google_flow_download_handler(webview: &ICoreWebView2) -> Result<(), String> {
+    let webview4 = webview.cast::<ICoreWebView2_4>().map_err(|e| e.to_string())?;
+    let mut token = 0;
+    unsafe {
+        webview4.add_DownloadStarting(
+            &DownloadStartingEventHandler::create(Box::new(
+                move |_, args: Option<ICoreWebView2DownloadStartingEventArgs>| {
+                    let Some(args) = args else { return Ok(()); };
+                    args.SetHandled(false)?;
+                    args.SetCancel(false)?;
+                    let mut suggested = PWSTR::null();
+                    let mut filename = if args.ResultFilePath(&mut suggested).is_ok() {
+                        let path = take_pwstr(suggested);
+                        std::path::Path::new(&path).file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| "flowpilot-download".into())
+                    } else { "flowpilot-download".into() };
+                    let mime_type = args.DownloadOperation().ok().and_then(|operation| {
+                        let mut mime = PWSTR::null();
+                        if operation.MimeType(&mut mime).is_ok() {
+                            Some(take_pwstr(mime))
+                        } else {
+                            None
+                        }
+                    });
+                    let mime_extension = mime_type.as_deref().and_then(extension_for_mime);
+                    let filename_extension = std::path::Path::new(&filename)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(|extension| extension.to_ascii_lowercase());
+                    let mime_matches_filename = filename_extension.as_deref().zip(mime_extension)
+                        .is_some_and(|(filename_extension, mime_extension)| filename_extension == mime_extension);
+                    if let Some(extension) = mime_extension.filter(|_| !mime_matches_filename) {
+                        filename.push('.');
+                        filename.push_str(extension);
+                    }
+                    let original_extension = std::path::Path::new(&filename)
+                        .extension()
+                        .map(|extension| extension.to_os_string());
+                    let Some(mut destination) = rfd::FileDialog::new().set_file_name(&filename).save_file() else {
+                        args.SetCancel(true)?;
+                        return Ok(());
+                    };
+                    if destination.extension().is_none() {
+                        if let Some(extension) = original_extension {
+                            destination.set_extension(extension);
+                        }
+                    }
+                    let destination = HSTRING::from(destination.as_os_str());
+                    args.SetResultFilePath(PCWSTR(destination.as_ptr()))?;
+                    args.SetHandled(true)?;
+                    Ok(())
+                },
+            )),
+            &mut token,
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn attach_gemini_download_handler(webview: &ICoreWebView2) -> Result<(), String> {
     let webview4 = webview.cast::<ICoreWebView2_4>().map_err(|e| e.to_string())?;
     let mut token = 0;
     unsafe {
@@ -33,8 +105,27 @@ fn attach_google_flow_download_handler(webview: &ICoreWebView2) -> Result<(), St
                         std::path::Path::new(&path).file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .filter(|name| !name.is_empty())
-                            .unwrap_or_else(|| "Flowpilot_download.mp4".into())
-                    } else { "Flowpilot_download.mp4".into() };
+                            .unwrap_or_else(|| "video.mp4".into())
+                    } else { "video.mp4".into() };
+                    let mime_type = args.DownloadOperation().ok().and_then(|operation| {
+                        let mut mime = PWSTR::null();
+                        if operation.MimeType(&mut mime).is_ok() {
+                            Some(take_pwstr(mime))
+                        } else {
+                            None
+                        }
+                    });
+                    let image_mime = mime_type.as_deref()
+                        .map(|mime| mime.trim().to_ascii_lowercase().starts_with("image/"))
+                        .unwrap_or(false);
+                    let image_filename = std::path::Path::new(&filename)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(|extension| matches!(extension.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg"))
+                        .unwrap_or(false);
+                    if image_mime || image_filename {
+                        return Ok(());
+                    }
                     let Some(mut destination) = rfd::FileDialog::new().set_file_name(&filename).save_file() else {
                         args.SetCancel(true)?;
                         return Ok(());
@@ -77,7 +168,7 @@ impl Default for WebviewManager {
 }
 
 fn webview_label(account_id: &str, provider: Option<&str>) -> String {
-    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", _ => WEBVIEW_LABEL_PREFIX })
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", _ => WEBVIEW_LABEL_PREFIX })
 }
 
 fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String> {
@@ -150,7 +241,7 @@ pub fn open<R: Runtime>(
         .get_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
 
-    let requested_label = format!("{}-{}", match provider.as_str() { "dola" => "dola", "migoo" => "migoo", _ => "google-flow" }, account_id);
+    let requested_label = format!("{}-{}", match provider.as_str() { "dola" => "dola", "migoo" => "migoo", "gemini" => "gemini", _ => "google-flow" }, account_id);
     let active_account = state
         .active_account_id
         .lock()
@@ -213,17 +304,19 @@ pub fn open<R: Runtime>(
 
     let profile = profile_path(app, &account_id)?;
     let url = WebviewUrl::External(
-        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, _ => GOOGLE_FLOW_URL }
+        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, "gemini" => GEMINI_URL, _ => GOOGLE_FLOW_URL }
             .parse()
             .map_err(|_| "invalid Google Flow URL")?,
     );
+    let initialization_script = match provider.as_str() {
+        "google-flow" => "",
+        "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT,
+        _ => crate::webview_download_bridge::INIT_SCRIPT,
+    };
+
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
-        .initialization_script_for_all_frames(if provider == "google-flow" {
-            crate::webview_download_bridge::GOOGLE_FLOW_RESET_SCRIPT
-        } else {
-            crate::webview_download_bridge::INIT_SCRIPT
-        })
+        .initialization_script_for_all_frames(initialization_script)
         .on_navigation(|url| url.scheme() == "https")
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     let webview = window
@@ -235,25 +328,20 @@ pub fn open<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
-    if provider.as_str() == "google-flow" {
-        webview.with_webview(|platform| {
+    if matches!(provider.as_str(), "google-flow" | "gemini") {
+        let is_gemini = provider.as_str() == "gemini";
+        webview.with_webview(move |platform| {
             if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
-                let _ = attach_google_flow_download_handler(&native);
+                let result = if is_gemini {
+                    attach_gemini_download_handler(&native)
+                } else {
+                    attach_google_flow_download_handler(&native)
+                };
+                let _ = result;
             }
         }).map_err(|e| e.to_string())?;
     }
 
-    #[cfg(all(windows, feature = "diag"))]
-    if let Some(webview) = app.get_webview(&requested_label) {
-        let diagnostic_label = requested_label.clone();
-        webview
-            .with_webview(move |platform| {
-                if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
-                    let _ = crate::webview_diagnostics::attach(&native, &diagnostic_label);
-                }
-            })
-            .map_err(|e| e.to_string())?;
-    }
 
     *state.active_provider.lock().map_err(|_| "webview state unavailable")? = Some(provider);
     *state

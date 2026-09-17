@@ -1,5 +1,5 @@
 export type StoredAccount = {
-  provider?: "google-flow" | "google_flow" | "dola" | "migoo"
+  provider?: "google-flow" | "google_flow" | "dola" | "migoo" | "gemini"
   id: string
   name: string
   email: string | null

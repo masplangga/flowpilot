@@ -8,7 +8,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
-type Provider = "google-flow" | "dola" | "migoo"
+type Provider = "google-flow" | "dola" | "migoo" | "gemini"
 type Account = {
   provider: Provider
   id: string
@@ -24,8 +24,8 @@ const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "b
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
-const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : "Google Flow"
-const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : (avatarUrl || "/google-flow.png")
+const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : "Google Flow"
+const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : (avatarUrl || "/google-flow.png")
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
@@ -220,7 +220,7 @@ export default function App() {
     if (licensed && accountsLoaded) void saveAccounts(accounts)
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
-    const activeStillExists = active !== null && accounts.some((account) => account.id === active.id)
+    const activeStillExists = active !== null && accounts.some((account) => account.id === active.id && account.provider !== "migoo")
     if (view !== "flow" && active) {
       void invoke("close_google_flow", { accountId: active.id, provider: active.provider })
     }
@@ -234,22 +234,23 @@ export default function App() {
       setNavigatorOpen(false)
     }
   }, [active, accounts, view, fullView, navigatorOpen])
-  const favoriteCount = accounts.filter((a) => a.favorite).length
-  const providerAccounts = accounts.filter((a) => (a.provider || "google-flow") === provider)
+  const uiAccounts = useMemo(() => accounts.filter((account) => account.provider !== "migoo"), [accounts])
+  const favoriteCount = uiAccounts.filter((a) => a.favorite).length
+  const providerAccounts = uiAccounts.filter((a) => (a.provider || "google-flow") === provider)
   const visible = useMemo(
     () =>
-      accounts.filter(
+      uiAccounts.filter(
         (a) =>
           (view !== "favorites" || a.favorite) &&
           `${a.name} ${a.email}`.toLowerCase().includes(query.toLowerCase())
       ),
-    [accounts, query, view]
+    [uiAccounts, query, view]
   )
   const displayed = useMemo(() => {
     if (!dragPreviewIds || view !== "accounts") return visible
-    const byId = new Map(accounts.map((account) => [account.id, account]))
+    const byId = new Map(uiAccounts.map((account) => [account.id, account]))
     return dragPreviewIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
-  }, [accounts, dragPreviewIds, view, visible])
+  }, [uiAccounts, dragPreviewIds, view, visible])
   const finishPointerDrag = (commit: boolean) => {
     const sourceId = dragSourceIdRef.current
     const targetId = dragTargetIdRef.current
@@ -306,7 +307,7 @@ export default function App() {
       dragTargetIdRef.current = targetId
       setDragTargetId(targetId)
       if (targetId) setDragPreviewIds((current) => {
-        const ids = current || accounts.map((a) => a.id)
+        const ids = current || uiAccounts.map((a) => a.id)
         const from = ids.indexOf(dragSourceIdRef.current || "")
         const to = ids.indexOf(targetId)
         if (from < 0 || to < 0 || from === to) return ids
@@ -331,7 +332,7 @@ export default function App() {
       window.removeEventListener("pointerup", onUp)
       window.removeEventListener("pointercancel", onCancel)
     }
-  }, [accounts])
+  }, [accounts, uiAccounts])
   const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || view !== "accounts" || query.trim()) return
     if ((event.target as HTMLElement).closest("button, a, input, textarea, select")) return
@@ -345,7 +346,7 @@ export default function App() {
     dragInsertAfterRef.current = false
     setDraggingId(id)
     setDragTargetId(null)
-    setDragPreviewIds(accounts.map((a) => a.id))
+    setDragPreviewIds(uiAccounts.map((a) => a.id))
     setDragOffset({ x: event.clientX - rect.left, y: event.clientY - rect.top })
     setDragPoint({ x: event.clientX, y: event.clientY })
   }
@@ -379,16 +380,7 @@ export default function App() {
           </button>
           {licenseError && <p className="dialog-error">{licenseError}</p>}
           <div className="link">
-            Don’t have a license?{" "}
-            <a
-              href={LICENSE_PURCHASE_URL}
-              onClick={(e) => {
-                e.preventDefault()
-                void openLicensePurchase()
-              }}
-            >
-              <u>Buy a license →</u>
-            </a>
+            Get your Flowpilot license from your referrer
           </div>
           <small>
             🔒 Your Google account login is handled directly in Google Flow.
@@ -405,7 +397,7 @@ export default function App() {
         <main className="content flow-content">
           <FlowShell
             account={active}
-            accounts={accounts.filter((candidate) => (candidate.provider || "google-flow") === active.provider)}
+            accounts={uiAccounts.filter((candidate) => (candidate.provider || "google-flow") === active.provider)}
             provider={active.provider}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
@@ -485,7 +477,7 @@ export default function App() {
               <div className="provider-tabs">
                 <button className={provider === "google-flow" ? "active" : ""} onClick={() => setProvider("google-flow")}>Google Flow</button>
                 <button className={provider === "dola" ? "active" : ""} onClick={() => setProvider("dola")}>Dola</button>
-                <button className={provider === "migoo" ? "active" : ""} onClick={() => setProvider("migoo")}>Migoo</button>
+                <button className={provider === "gemini" ? "active" : ""} onClick={() => setProvider("gemini")}>Gemini</button>
               </div>
             )}
           </div>
@@ -573,7 +565,7 @@ export default function App() {
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
               <p>Choose a provider and enter an account name.</p>
-              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "migoo" ? "active" : ""} onClick={() => setNewAccountProvider("migoo")}>Migoo</button></div>
+              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button></div>
               <input
                 autoFocus
                 value={newAccountName}
@@ -781,9 +773,6 @@ function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | nul
             <s>{plan.originalPrice}</s>
             <strong>{plan.price}</strong>
             <p>{plan.description}.</p>
-            <button className="primary" onClick={onBuy}>
-              Buy License
-            </button>
           </section>
         ))}
       </div>
