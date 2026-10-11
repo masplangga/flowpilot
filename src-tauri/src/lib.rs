@@ -37,10 +37,20 @@ async fn open_google_flow(
     width: f64,
     height: f64,
     provider: Option<String>,
+    force_navigation: Option<bool>,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::open(&operation_app, account_id, x, y, width, height, provider.unwrap_or_else(|| "google-flow".into()))
+        webview_manager::open(
+            &operation_app,
+            account_id,
+            x,
+            y,
+            width,
+            height,
+            provider.unwrap_or_else(|| "google-flow".into()),
+            force_navigation.unwrap_or(false),
+        )
     })
     .await
 }

@@ -119,8 +119,12 @@ export default function App() {
     | "settings"
     | "prompts"
     | "flow"
+    | "storyboard"
   >("accounts")
   const [active, setActive] = useState<Account | null>(null)
+  const [selectedGoogleFlowAccountId, setSelectedGoogleFlowAccountId] = useState<string | null>(null)
+  const [storyboardForceNavigation, setStoryboardForceNavigation] = useState(false)
+  const storyboardInitializedRef = useRef(new Set<string>())
   const [fullView, setFullView] = useState(false)
   const [navigatorOpen, setNavigatorOpen] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
@@ -220,23 +224,47 @@ export default function App() {
     if (licensed && accountsLoaded) void saveAccounts(accounts)
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
+    const webviewView = view === "flow" || view === "storyboard"
     const activeStillExists = active !== null && accounts.some((account) => account.id === active.id && account.provider !== "migoo")
-    if (view !== "flow" && active) {
+    if (!webviewView && active) {
       void invoke("close_google_flow", { accountId: active.id, provider: active.provider })
     }
-    if (view === "flow" && !activeStillExists) {
+    const activeProvider = active ? (active.provider || "google-flow") : null
+    if (view === "storyboard" && (!activeStillExists || activeProvider !== "google-flow")) {
+      setActive(null)
+      setFullView(false)
+      setNavigatorOpen(false)
+    } else if (view === "flow" && !activeStillExists) {
       setActive(null)
       setFullView(false)
       setNavigatorOpen(false)
       setView("accounts")
-    } else if (view !== "flow" && (fullView || navigatorOpen)) {
+    } else if (!webviewView && (fullView || navigatorOpen)) {
       setFullView(false)
       setNavigatorOpen(false)
     }
   }, [active, accounts, view, fullView, navigatorOpen])
   const uiAccounts = useMemo(() => accounts.filter((account) => account.provider !== "migoo"), [accounts])
   const favoriteCount = uiAccounts.filter((a) => a.favorite).length
-  const providerAccounts = uiAccounts.filter((a) => (a.provider || "google-flow") === provider)
+  const providerAccounts = uiAccounts.filter((account) => (account.provider || "google-flow") === provider)
+  const selectedStoryboardAccount = uiAccounts.find((account) => account.id === selectedGoogleFlowAccountId && (account.provider || "google-flow") === "google-flow")
+    || uiAccounts.filter((account) => (account.provider || "google-flow") === "google-flow").sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order)[0]
+  const openStoryboard = () => {
+    if (!selectedStoryboardAccount) {
+      if (active) void invoke("close_google_flow", { accountId: active.id, provider: active.provider })
+      setActive(null)
+      setStoryboardForceNavigation(false)
+      setView("storyboard")
+      return
+    }
+    setSelectedGoogleFlowAccountId(selectedStoryboardAccount.id)
+    setStoryboardForceNavigation(!storyboardInitializedRef.current.has(selectedStoryboardAccount.id))
+    storyboardInitializedRef.current.add(selectedStoryboardAccount.id)
+    setActive(selectedStoryboardAccount)
+    setFullView(false)
+    setNavigatorOpen(false)
+    setView("storyboard")
+  }
   const visible = useMemo(
     () =>
       uiAccounts.filter(
@@ -390,15 +418,17 @@ export default function App() {
         </div>
       </div>
     )
-  if (view === "flow" && active)
+  if ((view === "flow" || view === "storyboard") && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} licenseState={licenseState} />}
+        {!fullView && <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} />}
         <main className="content flow-content">
           <FlowShell
             account={active}
             accounts={uiAccounts.filter((candidate) => (candidate.provider || "google-flow") === active.provider)}
             provider={active.provider}
+            storyboard={view === "storyboard"}
+            forceNavigation={view === "storyboard" && storyboardForceNavigation}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
             onToggleFullView={() => {
@@ -408,8 +438,10 @@ export default function App() {
             onToggleNavigator={() => setNavigatorOpen((current) => !current)}
             onSelectAccount={(account) => {
               setNavigatorOpen(false)
+              if (account.provider === "google-flow") setSelectedGoogleFlowAccountId(account.id)
               if (account.id !== active.id) setActive(account)
             }}
+            onRetry={() => setStoryboardForceNavigation(true)}
             onBack={() => {
               void invoke("close_google_flow")
               setFullView(false)
@@ -422,7 +454,7 @@ export default function App() {
     )
   return (
     <div className="app" onContextMenu={(event) => event.preventDefault()}>
-      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} />
+      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} />
       <main className={`content ${view === "prompts" ? "prompts-content" : ""}`}>
         <header>
           <div>
@@ -432,7 +464,7 @@ export default function App() {
                 ? "SETTINGS"
                 : view === "favorites"
                 ? "FAVORITES"
-                : view === "prompts" ? "PROMPTS" : view.toUpperCase()}
+                : view === "prompts" ? "PROMPTS" : view === "storyboard" ? "STORYBOARD" : view.toUpperCase()}
             </div>
             <h1>
               {view === "settings"
@@ -441,6 +473,8 @@ export default function App() {
                 ? "Favorite Accounts"
                 : view === "prompts"
                 ? "PROMPTS"
+                : view === "storyboard"
+                ? "Storyboard"
                 : view === "license"
                 ? "License"
                 : view === "updates"
@@ -456,6 +490,8 @@ export default function App() {
                 ? "Your favorite Google Flow accounts in one place."
                 : view === "prompts"
                 ? "Create, organize, and reuse your prompts."
+                : view === "storyboard"
+                ? "Open Storyboard Studio with your selected Google Flow account."
                 : view === "license"
                 ? "Choose the Flowpilot license that fits your needs."
                 : view === "updates"
@@ -499,7 +535,16 @@ export default function App() {
             </>
           )}
         </header>
-        {view === "prompts" ? (
+        {view === "storyboard" ? (
+          <div className="feature-page">
+            <section className="info-card">
+              <div className="eyebrow">GOOGLE FLOW TOOL</div>
+              <h2>Storyboard</h2>
+              <p>Add or select a Google Flow account first, then retry Storyboard.</p>
+              <button className="primary" onClick={() => setView("accounts")}>Open Accounts</button>
+            </section>
+          </div>
+        ) : view === "prompts" ? (
           <PromptLibrary items={prompts} onChange={setPrompts} />
         ) : view === "settings" ? (
           <Settings profile={profile} onAvatarChange={updateProfileAvatar} />
@@ -519,6 +564,7 @@ export default function App() {
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
                   onOpen={() => {
+                    if (a.provider === "google-flow") setSelectedGoogleFlowAccountId(a.id)
                     setActive(a)
                     setView("flow")
                   }}
@@ -679,11 +725,13 @@ function Sidebar({
   setView,
   profile,
   licenseState,
+  onStoryboard,
 }: {
   view: string
   setView: (v: any) => void
   profile: { name: string; avatar: string | null }
   licenseState: LicenseState | null
+  onStoryboard: () => void
 }) {
   return (
     <aside onContextMenu={(event) => event.preventDefault()}>
@@ -703,6 +751,9 @@ function Sidebar({
       </button>
       <button className={view === "prompts" ? "active" : ""} onClick={() => setView("prompts")}>
         <SidebarIcon name="prompts" /> <span>Prompt Library</span>
+      </button>
+      <button className={view === "storyboard" ? "active" : ""} onClick={onStoryboard}>
+        <SidebarIcon name="storyboard" /> <span>Storyboard</span>
       </button>
       <div className="rule" />
       <div className="side-label">GENERAL</div>
@@ -750,7 +801,7 @@ function Sidebar({
     </aside>
   )
 }
-function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" | "prompts" }) {
+function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" | "prompts" | "storyboard" }) {
   const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
   const paths = {
     accounts: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
@@ -760,6 +811,7 @@ function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "u
     info: <><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></>,
     settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="10" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
     prompts: <><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
+    storyboard: <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="m9 5 2 4h4l2-4M8 14h8M8 17h5" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
 }
@@ -1177,8 +1229,11 @@ function FlowShell({
   onToggleFullView,
   onToggleNavigator,
   onSelectAccount,
+  onRetry,
   onBack,
   provider,
+  storyboard,
+  forceNavigation,
 }: {
   account: Account
   accounts: Account[]
@@ -1187,10 +1242,13 @@ function FlowShell({
   onToggleFullView: () => void
   onToggleNavigator: () => void
   onSelectAccount: (account: Account) => void
+  onRetry: () => void
   onBack: () => void
   provider: Provider
+  storyboard: boolean
+  forceNavigation: boolean
 }) {
-  const providerName = providerLabel(provider)
+  const providerName = storyboard ? "Storyboard" : providerLabel(provider)
   const [status, setStatus] = useState(`Loading ${providerName}...`)
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -1199,14 +1257,15 @@ function FlowShell({
     if (!rect) return
     invoke("open_google_flow", {
       accountId: account.id,
-      provider,
+      provider: storyboard ? "storyboard" : provider,
+      forceNavigation,
       x: rect.left,
       y: rect.top,
       width: rect.width,
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) setStatus(`${providerName} ready`)
+        if (!cancelled) setStatus(storyboard ? "Storyboard opened. If access is denied, retry or switch account." : `${providerName} ready`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
       })
       .catch((error) => {
@@ -1217,7 +1276,7 @@ function FlowShell({
       cancelled = true
       void invoke("close_google_flow", { accountId: account.id })
     }
-  }, [account.id, provider, providerName])
+  }, [account.id, provider, providerName, storyboard, forceNavigation])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -1248,6 +1307,7 @@ function FlowShell({
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span>{status}</span>
         <div className="flow-controls">
+          {storyboard && <button className="secondary" onClick={onRetry}>Retry Storyboard</button>}
           <div className="mini-navigator">
             <button className="navigator-trigger" onClick={onToggleNavigator} aria-expanded={navigatorOpen}>
               <img src={providerAvatar(account.provider, account.avatarUrl)} alt="" />

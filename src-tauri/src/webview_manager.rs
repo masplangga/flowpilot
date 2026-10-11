@@ -12,8 +12,37 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2
 #[cfg(windows)]
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 
-const GOOGLE_FLOW_URL: &str = "https://flow.google";
+const GOOGLE_FLOW_URL: &str = "https://flow.google/";
+const STORYBOARD_URL: &str = "https://flow.google.com/shared/tool/c66ec783-8729-4035-9934-b7f48907365c";
 const DOLA_URL: &str = "https://www.dola.com/chat/";
+
+const STORYBOARD_LOGIN_SCRIPT: &str = r#"(() => {
+  if (window.top !== window || window.__flowpilotStoryboardBridgeInstalled) return;
+  window.__flowpilotStoryboardBridgeInstalled = true;
+  const toolUrl = 'https://flow.google.com/shared/tool/c66ec783-8729-4035-9934-b7f48907365c';
+  const publicMarkers = ['unlock your best creative work', 'pricing', 'meet your agent'];
+  const authenticatedSelectors = [
+    '[aria-label*="account" i]',
+    '[data-testid*="project" i]',
+    'a[href*="/project"]',
+    'button[aria-label*="new" i]'
+  ];
+  const isAuthenticatedFlow = () => {
+    const body = (document.body?.innerText || '').toLowerCase();
+    if (publicMarkers.some((marker) => body.includes(marker))) return false;
+    return authenticatedSelectors.some((selector) => document.querySelector(selector));
+  };
+  const check = () => {
+    if (!window.__flowpilotStoryboardMode) return;
+    if (location.hostname !== 'flow.google.com' || location.href.startsWith(toolUrl)) return;
+    if (location.pathname === '/' && isAuthenticatedFlow()) location.assign(toolUrl);
+  };
+  const timer = window.setInterval(check, 1000);
+  window.addEventListener('beforeunload', () => window.clearInterval(timer), { once: true });
+  check();
+})()"#;
+const STORYBOARD_MODE_OFF_SCRIPT: &str = "window.__flowpilotStoryboardMode = false;";
+const STORYBOARD_MODE_ON_SCRIPT: &str = "window.__flowpilotStoryboardMode = true;";
 const MIGOO_URL: &str = "https://migoo.ai/";
 const GEMINI_URL: &str = "https://gemini.google.com/app";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
@@ -229,6 +258,7 @@ pub fn open<R: Runtime>(
     width: f64,
     height: f64,
     provider: String,
+    force_navigation: bool,
 ) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let operation = state
@@ -257,6 +287,27 @@ pub fn open<R: Runtime>(
     }
 
     if let Some(webview) = app.get_webview(&requested_label) {
+        let target_url = match provider.as_str() {
+            "dola" => DOLA_URL,
+            "migoo" => MIGOO_URL,
+            "gemini" => GEMINI_URL,
+            "storyboard" => STORYBOARD_URL,
+            _ => GOOGLE_FLOW_URL,
+        };
+        let should_navigate = force_navigation || provider != "storyboard";
+        let mode_script = match provider.as_str() {
+            "storyboard" => Some(STORYBOARD_MODE_ON_SCRIPT),
+            "google-flow" => Some(STORYBOARD_MODE_OFF_SCRIPT),
+            _ => None,
+        };
+        if let Some(script) = mode_script {
+            webview.eval(script).map_err(|e| e.to_string())?;
+        }
+        if should_navigate {
+            webview
+                .navigate(target_url.parse().map_err(|_| "invalid navigation URL")?)
+                .map_err(|e| e.to_string())?;
+        }
         webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -304,19 +355,20 @@ pub fn open<R: Runtime>(
 
     let profile = profile_path(app, &account_id)?;
     let url = WebviewUrl::External(
-        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, "gemini" => GEMINI_URL, _ => GOOGLE_FLOW_URL }
+        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, "gemini" => GEMINI_URL, "storyboard" => STORYBOARD_URL, _ => GOOGLE_FLOW_URL }
             .parse()
             .map_err(|_| "invalid Google Flow URL")?,
     );
-    let initialization_script = match provider.as_str() {
-        "google-flow" => "",
-        "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT,
-        _ => crate::webview_download_bridge::INIT_SCRIPT,
+    let initialization_script: String = match provider.as_str() {
+        "google-flow" => STORYBOARD_LOGIN_SCRIPT.to_string(),
+        "storyboard" => format!("window.__flowpilotStoryboardMode = true;\n{}", STORYBOARD_LOGIN_SCRIPT),
+        "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT.to_string(),
+        _ => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
     };
 
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
-        .initialization_script_for_all_frames(initialization_script)
+        .initialization_script_for_all_frames(&initialization_script)
         .on_navigation(|url| url.scheme() == "https")
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     let webview = window
@@ -328,7 +380,7 @@ pub fn open<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
-    if matches!(provider.as_str(), "google-flow" | "gemini") {
+    if matches!(provider.as_str(), "google-flow" | "storyboard" | "gemini") {
         let is_gemini = provider.as_str() == "gemini";
         webview.with_webview(move |platform| {
             if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
