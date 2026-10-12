@@ -149,6 +149,12 @@ async fn call<R: Runtime>(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
+    let cf_ray = r
+        .headers()
+        .get("cf-ray")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("none")
+        .to_string();
     let text = r
         .text()
         .await
@@ -156,13 +162,14 @@ async fn call<R: Runtime>(
     diagnostic(
         a,
         format!(
-            "[license] stage=response_received host={} endpoint={} duration_ms={} status={} content_type={} body_bytes={}",
+            "[license] stage=response_received host={} endpoint={} duration_ms={} status={} content_type={} body_bytes={} cf_ray={}",
             API_HOST,
             endpoint,
             started.elapsed().as_millis(),
             code.as_u16(),
             content_type,
-            text.len()
+            text.len(),
+            cf_ray
         ),
     );
     let d: ServerResponse = serde_json::from_str(&text).map_err(|_| {
