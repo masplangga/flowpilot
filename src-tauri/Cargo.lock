@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "flowpilot"
-version = "1.2.6"
+version = "1.2.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
