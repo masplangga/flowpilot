@@ -383,7 +383,9 @@ export default function App() {
     setLicenseChecking(true); setLicenseError("")
     try { const activated=await invoke<LicenseState>("activate_license", { licenseKey: key }); setLicenseState(activated); const w = getCurrentWindow(); setKey(""); setLicensed(true)
       await invoke("expand_main_window"); await w.show(); await w.setFocus(); return
-    } catch { setLicenseError("Server Unavailable") } finally { setLicenseChecking(false) }
+    } catch (error) {
+      setLicenseError(typeof error === "string" ? error : "Server Unavailable")
+    } finally { setLicenseChecking(false) }
   }
   const openLicensePurchase = () =>
     invoke("open_external_url", { url: LICENSE_PURCHASE_URL })
