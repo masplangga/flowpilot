@@ -89,6 +89,7 @@ const starter: Account[] = [
 export default function App() {
   const [licensed, setLicensed] = useState(false)
   const [licenseChecking, setLicenseChecking] = useState(true)
+  const activationPendingRef = useRef(false)
   const [licenseError, setLicenseError] = useState("")
   const [licenseState, setLicenseState] = useState<LicenseState | null>(null)
   const [deviceId, setDeviceId] = useState("")
@@ -379,13 +380,15 @@ export default function App() {
     setDragPoint({ x: event.clientX, y: event.clientY })
   }
   const activateLicense = async () => {
+    if (activationPendingRef.current) return
     if (!key.trim() || !deviceId) { setLicenseError("Invalid License"); return }
+    activationPendingRef.current = true
     setLicenseChecking(true); setLicenseError("")
     try { const activated=await invoke<LicenseState>("activate_license", { licenseKey: key }); setLicenseState(activated); const w = getCurrentWindow(); setKey(""); setLicensed(true)
       await invoke("expand_main_window"); await w.show(); await w.setFocus(); return
     } catch (error) {
       setLicenseError(typeof error === "string" ? error : "Server Unavailable")
-    } finally { setLicenseChecking(false) }
+    } finally { activationPendingRef.current = false; setLicenseChecking(false) }
   }
   const openLicensePurchase = () =>
     invoke("open_external_url", { url: LICENSE_PURCHASE_URL })
@@ -405,7 +408,7 @@ export default function App() {
             placeholder="Enter your license key"
             onKeyDown={(e) => e.key === "Enter" && activateLicense()}
           />
-          <button className="primary wide" onClick={activateLicense}>
+          <button className="primary wide" onClick={activateLicense} disabled={licenseChecking}>
             {licenseChecking ? "Activating…" : "Activate Flowpilot →"}
           </button>
           {licenseError && <p className="dialog-error">{licenseError}</p>}

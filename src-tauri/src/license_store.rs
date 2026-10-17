@@ -4,14 +4,32 @@ use std::{
     fs,
     io::Write,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager, Runtime};
 use uuid::Uuid;
 
-const API: &str = "https://flowpilot-license-server.frangga-snow.workers.dev";
-const API_HOST: &str = "flowpilot-license-server.frangga-snow.workers.dev";
+const API: &str = "https://flowpilot-license-api.pages.dev";
+const API_HOST: &str = "flowpilot-license-api.pages.dev";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+static ACTIVATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct ActivationGuard<'a>(&'a AtomicBool);
+
+impl<'a> ActivationGuard<'a> {
+    fn acquire(flag: &'a AtomicBool) -> Result<Self, String> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self(flag))
+            .map_err(|_| "Activation already in progress".to_string())
+    }
+}
+
+impl Drop for ActivationGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LicenseState {
@@ -35,6 +53,56 @@ struct ServerResponse {
     #[serde(default)]
     error: Option<String>,
 }
+
+fn safe_error_code(code: &str) -> Option<&str> {
+    (!code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then_some(code)
+}
+
+fn parse_response(status: reqwest::StatusCode, body: &str) -> Result<ServerResponse, String> {
+    let response: ServerResponse = serde_json::from_str(body).map_err(|_| {
+        if status.is_success() {
+            "Invalid Server Response".to_string()
+        } else {
+            format!(
+                "License server returned HTTP {} with invalid JSON",
+                status.as_u16()
+            )
+        }
+    })?;
+    if !status.is_success() {
+        let reason = match response.error.as_deref() {
+            Some("LICENSE_REVOKED") => "License Revoked".to_string(),
+            Some("LICENSE_EXPIRED") => "License Expired".to_string(),
+            Some("DEVICE_ALREADY_BOUND") => "Device Mismatch".to_string(),
+            Some("INVALID_LICENSE") => "Invalid License".to_string(),
+            Some("INVALID_REQUEST") => "Invalid Request".to_string(),
+            Some(code) => match safe_error_code(code) {
+                Some(code) => format!("License server error {code}"),
+                None => "License server rejected request".to_string(),
+            },
+            None if status.is_server_error() => "Server Unavailable".to_string(),
+            None => "License server rejected request".to_string(),
+        };
+        return Err(format!("{reason} (HTTP {})", status.as_u16()));
+    }
+    if response.status.is_empty() || response.plan.is_empty() {
+        return Err("Invalid Server Response".to_string());
+    }
+    Ok(response)
+}
+
+fn transport_message(endpoint: &str, category: &str) -> String {
+    if endpoint == "/license/activate" && category == "timeout" {
+        "Activation timed out. The server may have processed it; contact support with your license-network.log before trying again.".to_string()
+    } else {
+        format!("Server Unavailable: {category}")
+    }
+}
 fn path<R: Runtime>(a: &AppHandle<R>) -> Result<PathBuf, String> {
     a.path()
         .resolve("license-state.json", BaseDirectory::AppLocalData)
@@ -43,7 +111,9 @@ fn path<R: Runtime>(a: &AppHandle<R>) -> Result<PathBuf, String> {
 fn diagnostic<R: Runtime>(a: &AppHandle<R>, line: String) {
     eprintln!("{line}");
     let Ok(state_path) = path(a) else { return };
-    let Some(directory) = state_path.parent() else { return };
+    let Some(directory) = state_path.parent() else {
+        return;
+    };
     if fs::create_dir_all(directory).is_err() {
         return;
     }
@@ -140,7 +210,7 @@ async fn call<R: Runtime>(
                     category
                 ),
             );
-            format!("Server Unavailable: {category}")
+            transport_message(endpoint, category)
         })?;
     let code = r.status();
     let content_type = r
@@ -155,24 +225,47 @@ async fn call<R: Runtime>(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("none")
         .to_string();
-    let text = r
-        .text()
-        .await
-        .map_err(|_| "Server Unavailable: response_read_failed".to_string())?;
+    let text = r.text().await.map_err(|error| {
+        let category = if error.is_timeout() { "timeout" } else { "response_read_failed" };
+        diagnostic(
+            a,
+            format!(
+                "[license] stage=response_read_failure host={} endpoint={} duration_ms={} status={} cf_ray={} category={}",
+                API_HOST, endpoint, started.elapsed().as_millis(), code.as_u16(), cf_ray, category
+            ),
+        );
+        if category == "timeout" {
+            transport_message(endpoint, category)
+        } else {
+            format!("License server response read failed (HTTP {})", code.as_u16())
+        }
+    })?;
+    let error_code = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")?
+                .as_str()
+                .and_then(safe_error_code)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "none".to_string());
     diagnostic(
         a,
         format!(
-            "[license] stage=response_received host={} endpoint={} duration_ms={} status={} content_type={} body_bytes={} cf_ray={}",
+            "[license] stage=response_received host={} endpoint={} duration_ms={} status={} content_type={} body_bytes={} cf_ray={} error_code={}",
             API_HOST,
             endpoint,
             started.elapsed().as_millis(),
             code.as_u16(),
             content_type,
             text.len(),
-            cf_ray
+            cf_ray,
+            error_code
         ),
     );
-    let d: ServerResponse = serde_json::from_str(&text).map_err(|_| {
+    let parsed = parse_response(code, &text);
+    if serde_json::from_str::<ServerResponse>(&text).is_err() {
         diagnostic(
             a,
             format!(
@@ -185,30 +278,8 @@ async fn call<R: Runtime>(
                 text.len()
             ),
         );
-        if code.is_success() {
-            "Invalid Server Response".to_string()
-        } else if code.as_u16() >= 500 {
-            "Server Unavailable".to_string()
-        } else {
-            "Unexpected Server Response".to_string()
-        }
-    })?;
-    if !code.is_success() {
-        return Err(match d.error.as_deref() {
-            Some("LICENSE_REVOKED") => "License Revoked",
-            Some("LICENSE_EXPIRED") => "License Expired",
-            Some("DEVICE_ALREADY_BOUND") => "Device Mismatch",
-            Some("INVALID_LICENSE") => "Invalid License",
-            Some("INVALID_REQUEST") => "Invalid Request",
-            _ if code.as_u16() >= 500 => "Server Unavailable",
-            _ => "Unexpected Server Response",
-        }
-        .to_string());
     }
-    if d.status.is_empty() || d.plan.is_empty() {
-        return Err("Invalid Server Response".to_string());
-    }
-    Ok(d)
+    parsed
 }
 fn state<R: Runtime>(a: &AppHandle<R>, d: ServerResponse) -> Result<LicenseState, String> {
     let s = LicenseState {
@@ -231,6 +302,7 @@ pub async fn activate_license<R: Runtime>(
     if key.is_empty() {
         return Err("Invalid License".into());
     };
+    let _guard = ActivationGuard::acquire(&ACTIVATION_IN_PROGRESS)?;
     let d = call(&a, "/license/activate", key).await?;
     entry()?.set_password(key).map_err(|e| e.to_string())?;
     state(&a, d)
@@ -254,7 +326,9 @@ pub fn clear_license_state<R: Runtime>(a: AppHandle<R>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ServerResponse;
+    use super::{parse_response, transport_message, ActivationGuard, ServerResponse};
+    use reqwest::StatusCode;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn parses_error_envelope_without_success_fields() {
@@ -274,5 +348,77 @@ mod tests {
         assert_eq!(response.status, "active");
         assert_eq!(response.plan, "lifetime");
         assert!(response.lifetime);
+    }
+
+    #[test]
+    fn maps_http_error_fixtures_without_guessing_status_meaning() {
+        let fixtures = [
+            (
+                409,
+                r#"{"error":"DEVICE_ALREADY_BOUND"}"#,
+                "Device Mismatch (HTTP 409)",
+            ),
+            (
+                409,
+                r#"{"error":"CONFLICT"}"#,
+                "License server error CONFLICT (HTTP 409)",
+            ),
+            (
+                404,
+                r#"{"error":"ROUTE_NOT_FOUND"}"#,
+                "License server error ROUTE_NOT_FOUND (HTTP 404)",
+            ),
+            (404, r#"{}"#, "License server rejected request (HTTP 404)"),
+            (500, r#"{}"#, "Server Unavailable (HTTP 500)"),
+            (
+                502,
+                "<html>bad gateway</html>",
+                "License server returned HTTP 502 with invalid JSON",
+            ),
+            (
+                400,
+                r#"{"error":"<unsafe>"}"#,
+                "License server rejected request (HTTP 400)",
+            ),
+        ];
+        for (status, body, expected) in fixtures {
+            assert_eq!(
+                parse_response(StatusCode::from_u16(status).unwrap(), body)
+                    .err()
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn validates_success_response_and_invalid_json() {
+        assert!(parse_response(StatusCode::OK, r#"{"status":"active","plan":"pro"}"#).is_ok());
+        assert_eq!(
+            parse_response(StatusCode::OK, "not json").err().as_deref(),
+            Some("Invalid Server Response")
+        );
+        assert_eq!(
+            parse_response(StatusCode::OK, r#"{}"#).err().as_deref(),
+            Some("Invalid Server Response")
+        );
+    }
+
+    #[test]
+    fn activation_timeout_warns_about_uncertain_server_result() {
+        assert!(transport_message("/license/activate", "timeout").contains("may have processed"));
+        assert_eq!(
+            transport_message("/license/validate", "timeout"),
+            "Server Unavailable: timeout"
+        );
+    }
+
+    #[test]
+    fn activation_guard_rejects_overlap_and_releases_on_drop() {
+        let flag = AtomicBool::new(false);
+        let first = ActivationGuard::acquire(&flag).unwrap();
+        assert!(ActivationGuard::acquire(&flag).is_err());
+        drop(first);
+        assert!(ActivationGuard::acquire(&flag).is_ok());
     }
 }
