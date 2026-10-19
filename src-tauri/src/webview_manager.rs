@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 
 use tauri::path::BaseDirectory;
-use tauri::webview::WebviewBuilder;
+use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 #[cfg(windows)]
 use webview2_com::{DownloadStartingEventHandler, take_pwstr};
@@ -43,8 +44,47 @@ const STORYBOARD_LOGIN_SCRIPT: &str = r#"(() => {
 })()"#;
 const STORYBOARD_MODE_OFF_SCRIPT: &str = "window.__flowpilotStoryboardMode = false;";
 const STORYBOARD_MODE_ON_SCRIPT: &str = "window.__flowpilotStoryboardMode = true;";
+const GEMINI_TTS_BRANDING_SCRIPT: &str = r#"(() => {
+  if (window.top !== window || window.__flowpilotTtsBrandingCleanupInstalled) return;
+  window.__flowpilotTtsBrandingCleanupInstalled = true;
+
+  const hideGeminiBranding = () => {
+    const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], div, span'))
+      .filter((element) => {
+        if ((element.innerText || element.textContent || '').trim() !== 'Gemini') return false;
+        const rect = element.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < 120 && rect.left >= 0 && rect.left < 280
+          && rect.width > 0 && rect.width <= 280 && rect.height > 0 && rect.height <= 90;
+      });
+
+    const branding = candidates.reduce((largest, element) => {
+      if (!largest) return element;
+      const rect = element.getBoundingClientRect();
+      const largestRect = largest.getBoundingClientRect();
+      return rect.width * rect.height > largestRect.width * largestRect.height ? element : largest;
+    }, null);
+
+    if (branding && branding.dataset.flowpilotTtsBrandingHidden !== 'true') {
+      branding.dataset.flowpilotTtsBrandingHidden = 'true';
+      branding.style.setProperty('display', 'none', 'important');
+    }
+  };
+
+  const install = () => {
+    if (!document.documentElement) {
+      requestAnimationFrame(install);
+      return;
+    }
+    const observer = new MutationObserver(hideGeminiBranding);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    hideGeminiBranding();
+  };
+
+  install();
+})()"#;
 const MIGOO_URL: &str = "https://migoo.ai/";
 const GEMINI_URL: &str = "https://gemini.google.com/app";
+const GEMINI_TTS_URL: &str = "https://share.gemini.google/jLVZLHqihx0e";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
 
@@ -197,10 +237,10 @@ impl Default for WebviewManager {
 }
 
 fn webview_label(account_id: &str, provider: Option<&str>) -> String {
-    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", _ => WEBVIEW_LABEL_PREFIX })
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
 }
 
-fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String> {
+fn touch_webview(state: &WebviewManager, label: &str) -> Result<(), String> {
     let mut counter = state
         .usage_counter
         .lock()
@@ -210,8 +250,63 @@ fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String>
         .cached_accounts
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    cached.insert(account_id.to_string(), *counter);
+    cached.insert(label.to_string(), *counter);
     Ok(())
+}
+
+fn safe_tts_resume_url(raw_url: &str) -> Option<String> {
+    let clean_url = raw_url.split(['?', '#']).next()?.trim();
+    let route = clean_url.strip_prefix("https://gemini.google.com/")?;
+    let (section, remainder) = route.split_once('/')?;
+    if !matches!(section, "share" | "gem") {
+        return None;
+    }
+    let id = remainder.split('/').next()?;
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        return None;
+    }
+    Some(format!("https://gemini.google.com/{section}/{id}"))
+}
+
+fn is_gemini_tts_login_landing(host: Option<&str>, path: &str) -> bool {
+    host == Some("gemini.google.com") && matches!(path, "/" | "/app")
+}
+
+fn tts_resume_path<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> Result<PathBuf, String> {
+    validate_account_id(account_id)?;
+    let root = app
+        .path()
+        .resolve("flowpilot-tts", BaseDirectory::AppLocalData)
+        .map_err(|error| error.to_string())?;
+    let path = root.join(format!("{account_id}.txt"));
+    if path.parent() != Some(root.as_path()) {
+        return Err("invalid TTS resume path".to_string());
+    }
+    Ok(path)
+}
+
+fn load_tts_resume_url<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> Result<Option<String>, String> {
+    let path = tts_resume_path(app, account_id)?;
+    let Ok(raw_url) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    Ok(safe_tts_resume_url(&raw_url))
+}
+
+fn save_tts_resume_url<R: Runtime>(app: &AppHandle<R>, account_id: &str, raw_url: &str) -> Result<(), String> {
+    let Some(url) = safe_tts_resume_url(raw_url) else {
+        return Ok(());
+    };
+    let path = tts_resume_path(app, account_id)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid TTS resume path".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(path, url).map_err(|error| error.to_string())
 }
 
 fn validate_account_id(account_id: &str) -> Result<(), String> {
@@ -271,18 +366,19 @@ pub fn open<R: Runtime>(
         .get_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
 
-    let requested_label = format!("{}-{}", match provider.as_str() { "dola" => "dola", "migoo" => "migoo", "gemini" => "gemini", _ => "google-flow" }, account_id);
+    let requested_label = webview_label(&account_id, Some(&provider));
     let active_account = state
         .active_account_id
         .lock()
         .map_err(|_| "webview state unavailable")?
         .clone();
-    if let Some(active_id) = active_account.as_deref() {
-        if active_id != account_id {
-            let active_provider = state.active_provider.lock().map_err(|_| "webview state unavailable")?.clone();
-            if let Some(webview) = app.get_webview(&webview_label(active_id, active_provider.as_deref())) {
-                webview.hide().map_err(|e| e.to_string())?;
-            }
+    let active_provider = state.active_provider.lock().map_err(|_| "webview state unavailable")?.clone();
+    let active_label = active_account
+        .as_deref()
+        .map(|active_id| webview_label(active_id, active_provider.as_deref()));
+    if let Some(label) = active_label.as_deref().filter(|label| *label != requested_label) {
+        if let Some(webview) = app.get_webview(label) {
+            webview.hide().map_err(|e| e.to_string())?;
         }
     }
 
@@ -291,10 +387,14 @@ pub fn open<R: Runtime>(
             "dola" => DOLA_URL,
             "migoo" => MIGOO_URL,
             "gemini" => GEMINI_URL,
+            "gemini-tts" => GEMINI_TTS_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         };
-        let should_navigate = force_navigation || provider != "storyboard";
+        let should_navigate = match provider.as_str() {
+            "storyboard" | "gemini-tts" => force_navigation,
+            _ => true,
+        };
         let mode_script = match provider.as_str() {
             "storyboard" => Some(STORYBOARD_MODE_ON_SCRIPT),
             "google-flow" => Some(STORYBOARD_MODE_OFF_SCRIPT),
@@ -324,7 +424,7 @@ pub fn open<R: Runtime>(
             .visible
             .lock()
             .map_err(|_| "webview state unavailable")? = true;
-        touch_account(&state, &account_id)?;
+        touch_webview(&state, &requested_label)?;
         return Ok(());
     }
 
@@ -336,11 +436,13 @@ pub fn open<R: Runtime>(
         if cached.len() >= MAX_CACHED_WEBVIEWS {
             let eviction = cached
                 .iter()
-                .filter(|(id, _)| Some(id.as_str()) != active_account.as_deref())
+                .filter(|(label, _)| {
+                    Some(label.as_str()) != active_label.as_deref()
+                        && label.as_str() != requested_label
+                })
                 .min_by_key(|(_, last_used)| **last_used)
-                .map(|(id, _)| id.clone());
-            if let Some(evicted_id) = eviction {
-                let evicted_label = webview_label(&evicted_id, None);
+                .map(|(label, _)| label.clone());
+            if let Some(evicted_label) = eviction {
                 crate::webview_download_bridge::cancel_for_webview(
                     &app.state::<crate::webview_download_bridge::DownloadState>(),
                     &evicted_label,
@@ -348,29 +450,91 @@ pub fn open<R: Runtime>(
                 if let Some(webview) = app.get_webview(&evicted_label) {
                     webview.close().map_err(|e| e.to_string())?;
                 }
-                cached.remove(&evicted_id);
+                cached.remove(&evicted_label);
             }
         }
     }
 
     let profile = profile_path(app, &account_id)?;
+    let initial_url = if provider == "gemini-tts" {
+        load_tts_resume_url(app, &account_id)?.unwrap_or_else(|| GEMINI_TTS_URL.to_string())
+    } else {
+        match provider.as_str() {
+            "dola" => DOLA_URL,
+            "migoo" => MIGOO_URL,
+            "gemini" => GEMINI_URL,
+            "storyboard" => STORYBOARD_URL,
+            _ => GOOGLE_FLOW_URL,
+        }
+        .to_string()
+    };
     let url = WebviewUrl::External(
-        match provider.as_str() { "dola" => DOLA_URL, "migoo" => MIGOO_URL, "gemini" => GEMINI_URL, "storyboard" => STORYBOARD_URL, _ => GOOGLE_FLOW_URL }
+        initial_url
             .parse()
-            .map_err(|_| "invalid Google Flow URL")?,
+            .map_err(|_| "invalid WebView URL")?,
     );
     let initialization_script: String = match provider.as_str() {
         "google-flow" => STORYBOARD_LOGIN_SCRIPT.to_string(),
         "storyboard" => format!("window.__flowpilotStoryboardMode = true;\n{}", STORYBOARD_LOGIN_SCRIPT),
         "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT.to_string(),
+        "gemini-tts" => GEMINI_TTS_BRANDING_SCRIPT.to_string(),
         _ => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
     };
 
+    let persist_tts_url = provider == "gemini-tts";
+    let allow_google_popups = persist_tts_url;
+    let tts_login_seen = Arc::new(AtomicBool::new(false));
+    let tts_redirect_target = initial_url.clone();
+    let persistence_app = app.clone();
+    let persistence_account_id = account_id.clone();
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
         .initialization_script_for_all_frames(&initialization_script)
-        .on_navigation(|url| url.scheme() == "https")
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+        .on_navigation({
+            let tts_login_seen = Arc::clone(&tts_login_seen);
+            move |url| {
+                if persist_tts_url {
+                    if url.host_str() == Some("accounts.google.com") {
+                        tts_login_seen.store(true, Ordering::SeqCst);
+                    }
+                    let _ = save_tts_resume_url(
+                        &persistence_app,
+                        &persistence_account_id,
+                        url.as_str(),
+                    );
+                }
+                url.scheme() == "https"
+            }
+        })
+        .on_page_load({
+            let tts_login_seen = Arc::clone(&tts_login_seen);
+            move |webview, payload| {
+                let loaded_url = payload.url();
+                if persist_tts_url
+                    && payload.event() == PageLoadEvent::Finished
+                    && is_gemini_tts_login_landing(loaded_url.host_str(), loaded_url.path())
+                    && tts_login_seen.swap(false, Ordering::SeqCst)
+                {
+                    if let Ok(target) = tts_redirect_target.parse() {
+                        let _ = webview.navigate(target);
+                    }
+                }
+            }
+        })
+        .on_new_window(move |url, _| {
+            let host = url.host_str().unwrap_or_default();
+            if allow_google_popups
+                && url.scheme() == "https"
+                && (host == "google.com"
+                    || host.ends_with(".google.com")
+                    || host == "google"
+                    || host.ends_with(".google"))
+            {
+                tauri::webview::NewWindowResponse::Allow
+            } else {
+                tauri::webview::NewWindowResponse::Deny
+            }
+        });
     let webview = window
         .add_child(
             builder,
@@ -404,7 +568,7 @@ pub fn open<R: Runtime>(
         .visible
         .lock()
         .map_err(|_| "webview state unavailable")? = true;
-    touch_account(&state, &account_id)?;
+    touch_webview(&state, &requested_label)?;
     drop(operation);
     Ok(())
 }
@@ -442,6 +606,7 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, provide
 pub fn resize<R: Runtime>(
     app: &AppHandle<R>,
     account_id: String,
+    provider: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -458,7 +623,8 @@ pub fn resize<R: Runtime>(
         return Ok(());
     }
     let active_provider = state.active_provider.lock().map_err(|_| "webview state unavailable")?.clone();
-    if let Some(webview) = app.get_webview(&webview_label(&account_id, active_provider.as_deref())) {
+    let requested_provider = provider.or(active_provider);
+    if let Some(webview) = app.get_webview(&webview_label(&account_id, requested_provider.as_deref())) {
         webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -476,21 +642,30 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         .operation
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&account_id, None);
-
-    crate::webview_download_bridge::cancel_for_webview(
-        &app.state::<crate::webview_download_bridge::DownloadState>(),
-        &label,
-    );
-    if let Some(webview) = app.get_webview(&label) {
-        webview.close().map_err(|e| e.to_string())?;
+    let labels = [
+        webview_label(&account_id, None),
+        webview_label(&account_id, Some("dola")),
+        webview_label(&account_id, Some("migoo")),
+        webview_label(&account_id, Some("gemini")),
+        webview_label(&account_id, Some("gemini-tts")),
+    ];
+    for label in &labels {
+        crate::webview_download_bridge::cancel_for_webview(
+            &app.state::<crate::webview_download_bridge::DownloadState>(),
+            label,
+        );
+        if let Some(webview) = app.get_webview(label) {
+            webview.close().map_err(|e| e.to_string())?;
+        }
     }
     {
         let mut cached = state
             .cached_accounts
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        cached.remove(&account_id);
+        for label in &labels {
+            cached.remove(label);
+        }
     }
     {
         let mut active = state
@@ -503,6 +678,10 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
                 .visible
                 .lock()
                 .map_err(|_| "webview state unavailable")? = false;
+            *state
+                .active_provider
+                .lock()
+                .map_err(|_| "webview state unavailable")? = None;
         }
     }
 
@@ -516,5 +695,46 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
             eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_gemini_tts_login_landing, safe_tts_resume_url, webview_label};
+
+    #[test]
+    fn tts_login_landing_matches_only_gemini_home() {
+        assert!(is_gemini_tts_login_landing(Some("gemini.google.com"), "/app"));
+        assert!(is_gemini_tts_login_landing(Some("gemini.google.com"), "/"));
+        assert!(!is_gemini_tts_login_landing(Some("gemini.google.com"), "/share/app-id"));
+        assert!(!is_gemini_tts_login_landing(Some("accounts.google.com"), "/"));
+    }
+
+    #[test]
+    fn tts_resume_url_keeps_only_safe_gemini_content_routes() {
+        assert_eq!(
+            safe_tts_resume_url(
+                "https://gemini.google.com/share/662b1aa6dcbe?social_preview=false#result"
+            ),
+            Some("https://gemini.google.com/share/662b1aa6dcbe".to_string())
+        );
+        assert_eq!(
+            safe_tts_resume_url("https://gemini.google.com/gem/abc_123-xy?authuser=2"),
+            Some("https://gemini.google.com/gem/abc_123-xy".to_string())
+        );
+    }
+
+    #[test]
+    fn tts_resume_url_rejects_auth_and_external_routes() {
+        assert_eq!(safe_tts_resume_url("https://gemini.google.com/app"), None);
+        assert_eq!(safe_tts_resume_url("https://accounts.google.com/signin"), None);
+        assert_eq!(safe_tts_resume_url("http://gemini.google.com/share/abc"), None);
+        assert_eq!(safe_tts_resume_url("https://gemini.google.com.evil.test/share/abc"), None);
+    }
+
+    #[test]
+    fn tts_has_its_own_view_label_for_the_gemini_account() {
+        assert_eq!(webview_label("account-id", Some("gemini-tts")), "flowpilot-tts-account-id");
+        assert_eq!(webview_label("account-id", Some("gemini")), "gemini-account-id");
     }
 }

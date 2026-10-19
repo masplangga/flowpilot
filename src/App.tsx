@@ -121,9 +121,11 @@ export default function App() {
     | "prompts"
     | "flow"
     | "storyboard"
+    | "tts"
   >("accounts")
   const [active, setActive] = useState<Account | null>(null)
   const [selectedGoogleFlowAccountId, setSelectedGoogleFlowAccountId] = useState<string | null>(null)
+  const [selectedGeminiAccountId, setSelectedGeminiAccountId] = useState<string | null>(null)
   const [storyboardForceNavigation, setStoryboardForceNavigation] = useState(false)
   const storyboardInitializedRef = useRef(new Set<string>())
   const [fullView, setFullView] = useState(false)
@@ -140,6 +142,13 @@ export default function App() {
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
   const [prompts, setPrompts] = useState<PromptItem[]>([])
   const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null)
+  const uiAccounts = useMemo(() => accounts.filter((account) => account.provider !== "migoo"), [accounts])
+  const geminiAccounts = useMemo(() => uiAccounts.filter((account) => (account.provider || "google-flow") === "gemini"), [uiAccounts])
+  const selectedGeminiAccount = geminiAccounts.find((account) => account.id === selectedGeminiAccountId) || null
+  const defaultGeminiAccount = [...geminiAccounts].sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order)[0] || null
+  const ttsAccount = active?.provider === "gemini" && geminiAccounts.some((account) => account.id === active.id)
+    ? active
+    : selectedGeminiAccount || defaultGeminiAccount
   useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(!saved?.status){setLicenseChecking(false);return} setLicenseState(saved); const validated=await invoke<LicenseState>("validate_license"); setLicenseState(validated); setLicensed(true); await invoke("expand_main_window"); const w=getCurrentWindow(); await w.show(); await w.setFocus() } catch (error) { setLicenseError(typeof error === "string" ? error : "Server Unavailable") } finally { setLicenseChecking(false) } })() }, [])
   useEffect(() => { if (licensed) void invoke<PromptItem[]>("list_prompts").then(setPrompts).catch(() => setPrompts([])) }, [licensed])
   const dragSourceRef = useRef<HTMLElement | null>(null)
@@ -225,7 +234,7 @@ export default function App() {
     if (licensed && accountsLoaded) void saveAccounts(accounts)
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
-    const webviewView = view === "flow" || view === "storyboard"
+    const webviewView = view === "flow" || view === "storyboard" || (view === "tts" && ttsAccount !== null)
     const activeStillExists = active !== null && accounts.some((account) => account.id === active.id && account.provider !== "migoo")
     if (!webviewView && active) {
       void invoke("close_google_flow", { accountId: active.id, provider: active.provider })
@@ -244,8 +253,7 @@ export default function App() {
       setFullView(false)
       setNavigatorOpen(false)
     }
-  }, [active, accounts, view, fullView, navigatorOpen])
-  const uiAccounts = useMemo(() => accounts.filter((account) => account.provider !== "migoo"), [accounts])
+  }, [active, accounts, view, fullView, navigatorOpen, ttsAccount])
   const favoriteCount = uiAccounts.filter((a) => a.favorite).length
   const providerAccounts = uiAccounts.filter((account) => (account.provider || "google-flow") === provider)
   const selectedStoryboardAccount = uiAccounts.find((account) => account.id === selectedGoogleFlowAccountId && (account.provider || "google-flow") === "google-flow")
@@ -265,6 +273,20 @@ export default function App() {
     setFullView(false)
     setNavigatorOpen(false)
     setView("storyboard")
+  }
+  const openFlowpilotTts = () => {
+    const account = active?.provider === "gemini" ? active : ttsAccount
+    if (account) {
+      setSelectedGeminiAccountId(account.id)
+      setActive(account)
+    }
+    setFullView(false)
+    setNavigatorOpen(false)
+    setView("tts")
+  }
+  const selectTtsAccount = (account: Account) => {
+    setSelectedGeminiAccountId(account.id)
+    setActive(account)
   }
   const visible = useMemo(
     () =>
@@ -423,16 +445,17 @@ export default function App() {
         </div>
       </div>
     )
-  if ((view === "flow" || view === "storyboard") && active)
+  if ((view === "flow" || view === "storyboard") && active || (view === "tts" && ttsAccount))
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} />}
+        {!fullView && <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} onTts={openFlowpilotTts} />}
         <main className="content flow-content">
           <FlowShell
-            account={active}
-            accounts={uiAccounts.filter((candidate) => (candidate.provider || "google-flow") === active.provider)}
-            provider={active.provider}
+            account={view === "tts" ? ttsAccount! : active!}
+            accounts={view === "tts" ? geminiAccounts : uiAccounts.filter((candidate) => (candidate.provider || "google-flow") === active!.provider)}
+            provider={view === "tts" ? "gemini" : active!.provider}
             storyboard={view === "storyboard"}
+            tts={view === "tts"}
             forceNavigation={view === "storyboard" && storyboardForceNavigation}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
@@ -444,7 +467,8 @@ export default function App() {
             onSelectAccount={(account) => {
               setNavigatorOpen(false)
               if (account.provider === "google-flow") setSelectedGoogleFlowAccountId(account.id)
-              if (account.id !== active.id) setActive(account)
+              if (account.provider === "gemini") setSelectedGeminiAccountId(account.id)
+              if (account.id !== active?.id) setActive(account)
             }}
             onRetry={() => setStoryboardForceNavigation(true)}
             onBack={() => {
@@ -459,20 +483,24 @@ export default function App() {
     )
   return (
     <div className="app" onContextMenu={(event) => event.preventDefault()}>
-      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} />
+      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} onStoryboard={openStoryboard} onTts={openFlowpilotTts} />
       <main className={`content ${view === "prompts" ? "prompts-content" : ""}`}>
         <header>
           <div>
             <div className="eyebrow">
               FLOWPILOT /{" "}
-              {view === "settings"
+              {view === "tts"
+                ? "TTS"
+                : view === "settings"
                 ? "SETTINGS"
                 : view === "favorites"
                 ? "FAVORITES"
                 : view === "prompts" ? "PROMPTS" : view === "storyboard" ? "STORYBOARD" : view.toUpperCase()}
             </div>
             <h1>
-              {view === "settings"
+              {view === "tts"
+                ? "Flowpilot TTS"
+                : view === "settings"
                 ? "Settings"
                 : view === "favorites"
                 ? "Favorite Accounts"
@@ -489,7 +517,9 @@ export default function App() {
                 : `${providerLabel(provider)} Accounts`}
             </h1>
             <p>
-              {view === "settings"
+              {view === "tts"
+                ? "Create speech with Gemini using the selected Gemini account."
+                : view === "settings"
                 ? "Keep Flowpilot personal, private, and ready to use."
                 : view === "favorites"
                 ? "Your favorite Google Flow accounts in one place."
@@ -540,7 +570,9 @@ export default function App() {
             </>
           )}
         </header>
-        {view === "storyboard" ? (
+        {view === "tts" ? (
+          <FlowpilotTts account={null} accounts={geminiAccounts} onSelectAccount={selectTtsAccount} onAddAccount={() => { setProvider("gemini"); setView("accounts") }} />
+        ) : view === "storyboard" ? (
           <div className="feature-page">
             <section className="info-card">
               <div className="eyebrow">GOOGLE FLOW TOOL</div>
@@ -570,6 +602,7 @@ export default function App() {
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
                   onOpen={() => {
                     if (a.provider === "google-flow") setSelectedGoogleFlowAccountId(a.id)
+                    if (a.provider === "gemini") setSelectedGeminiAccountId(a.id)
                     setActive(a)
                     setView("flow")
                   }}
@@ -731,12 +764,14 @@ function Sidebar({
   profile,
   licenseState,
   onStoryboard,
+  onTts,
 }: {
   view: string
   setView: (v: any) => void
   profile: { name: string; avatar: string | null }
   licenseState: LicenseState | null
   onStoryboard: () => void
+  onTts: () => void
 }) {
   return (
     <aside onContextMenu={(event) => event.preventDefault()}>
@@ -759,6 +794,9 @@ function Sidebar({
       </button>
       <button className={view === "storyboard" ? "active" : ""} onClick={onStoryboard}>
         <SidebarIcon name="storyboard" /> <span>Storyboard</span>
+      </button>
+      <button className={view === "tts" ? "active" : ""} onClick={onTts}>
+        <SidebarIcon name="tts" /> <span>Flowpilot TTS</span>
       </button>
       <div className="rule" />
       <div className="side-label">GENERAL</div>
@@ -806,7 +844,7 @@ function Sidebar({
     </aside>
   )
 }
-function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" | "prompts" | "storyboard" }) {
+function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" | "prompts" | "storyboard" | "tts" }) {
   const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
   const paths = {
     accounts: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
@@ -817,8 +855,117 @@ function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "u
     settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="10" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
     prompts: <><path d="M5 4h14v16H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
     storyboard: <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="m9 5 2 4h4l2-4M8 14h8M8 17h5" /></>,
+    tts: <><path d="M12 3v12a3 3 0 1 1-2.8-3" /><path d="M12 5c2 2 4 2 6 2v8a6 6 0 0 1-6 6" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
+}
+function FlowpilotTts({
+  account,
+  accounts,
+  onSelectAccount,
+  onAddAccount,
+}: {
+  account: Account | null
+  accounts: Account[]
+  onSelectAccount: (account: Account) => void
+  onAddAccount: () => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [status, setStatus] = useState("Opening Gemini TTS…")
+  useEffect(() => {
+    if (!account) return
+    let cancelled = false
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const syncBounds = () => {
+      const bounds = containerRef.current?.getBoundingClientRect()
+      if (!bounds) return
+      void invoke("resize_google_flow", {
+        accountId: account.id,
+        provider: "gemini-tts",
+        x: bounds.left,
+        y: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      })
+    }
+    void invoke("open_google_flow", {
+      accountId: account.id,
+      provider: "gemini-tts",
+      forceNavigation: false,
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    })
+      .then(() => {
+        if (!cancelled) setStatus("Gemini TTS opened. Complete Google sign-in here if prompted.")
+        containerRef.current?.dispatchEvent(new Event("flowpilot-tts-ready"))
+      })
+      .catch((error) => {
+        console.error("Flowpilot TTS WebView failed", error)
+        if (!cancelled) setStatus("Unable to open Flowpilot TTS. Please try again.")
+      })
+    const container = containerRef.current
+    const onReady = () => syncBounds()
+    container?.addEventListener("flowpilot-tts-ready", onReady)
+    const observer = container ? new ResizeObserver(syncBounds) : null
+    if (container) observer?.observe(container)
+    return () => {
+      cancelled = true
+      observer?.disconnect()
+      container?.removeEventListener("flowpilot-tts-ready", onReady)
+      void invoke("close_google_flow", { accountId: account.id, provider: "gemini-tts" })
+    }
+  }, [account?.id])
+
+  if (!account) {
+    return (
+      <section className="feature-page flowpilot-tts-page">
+        <div className="info-card">
+          <div className="eyebrow">GEMINI ACCOUNT</div>
+          <h2>{accounts.length ? "Choose a Gemini account" : "Add a Gemini account"}</h2>
+          <p>{accounts.length ? "Flowpilot TTS will use this account’s existing Gemini profile." : "Add a Gemini account first so Flowpilot TTS can use its own saved Gemini session."}</p>
+          {accounts.length ? (
+            <div className="tts-account-choices">
+              {accounts.map((candidate) => (
+                <button key={candidate.id} className="secondary" onClick={() => onSelectAccount(candidate)}>
+                  {candidate.name}{candidate.email ? ` · ${candidate.email}` : ""}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <button className="primary" onClick={onAddAccount}>Open Gemini accounts</button>
+          )}
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="feature-page flowpilot-tts-page">
+      <div className="tts-toolbar">
+        <div>
+          <div className="eyebrow">GEMINI TEXT TO SPEECH</div>
+          <p>{status}</p>
+        </div>
+        {accounts.length > 1 && (
+          <label className="tts-account-picker">
+            <span>Gemini account</span>
+            <select value={account.id} onChange={(event) => {
+              const next = accounts.find((candidate) => candidate.id === event.target.value)
+              if (next) onSelectAccount(next)
+            }}>
+              {accounts.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+      <div className="tts-webview-frame">
+        <div ref={containerRef} className="tts-webview-host" aria-label={`Gemini TTS WebView for ${account.name}`} />
+      </div>
+    </section>
+  )
 }
 function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | null; onBuy: () => void }) {
   return (
@@ -1238,6 +1385,7 @@ function FlowShell({
   onBack,
   provider,
   storyboard,
+  tts,
   forceNavigation,
 }: {
   account: Account
@@ -1251,9 +1399,10 @@ function FlowShell({
   onBack: () => void
   provider: Provider
   storyboard: boolean
+  tts: boolean
   forceNavigation: boolean
 }) {
-  const providerName = storyboard ? "Storyboard" : providerLabel(provider)
+  const providerName = storyboard ? "Storyboard" : tts ? "Flowpilot TTS" : providerLabel(provider)
   const [status, setStatus] = useState(`Loading ${providerName}...`)
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -1262,7 +1411,7 @@ function FlowShell({
     if (!rect) return
     invoke("open_google_flow", {
       accountId: account.id,
-      provider: storyboard ? "storyboard" : provider,
+      provider: storyboard ? "storyboard" : tts ? "gemini-tts" : provider,
       forceNavigation,
       x: rect.left,
       y: rect.top,
@@ -1270,7 +1419,7 @@ function FlowShell({
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) setStatus(storyboard ? "Storyboard opened. If access is denied, retry or switch account." : `${providerName} ready`)
+        if (!cancelled) setStatus(storyboard ? "Storyboard opened. If access is denied, retry or switch account." : tts ? "Gemini TTS ready" : `${providerName} ready`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
       })
       .catch((error) => {
@@ -1279,15 +1428,15 @@ function FlowShell({
       })
     return () => {
       cancelled = true
-      void invoke("close_google_flow", { accountId: account.id })
+      void invoke("close_google_flow", { accountId: account.id, provider: storyboard ? "storyboard" : tts ? "gemini-tts" : provider })
     }
-  }, [account.id, provider, providerName, storyboard, forceNavigation])
+  }, [account.id, provider, providerName, storyboard, tts, forceNavigation])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     const syncBounds = () => {
       const rect = container.getBoundingClientRect()
-      void invoke("resize_google_flow", { accountId: account.id, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      void invoke("resize_google_flow", { accountId: account.id, provider: tts ? "gemini-tts" : storyboard ? "storyboard" : provider, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
     }
     const onReady = () => syncBounds()
     container.addEventListener("flowpilot-webview-ready", onReady)
@@ -1298,7 +1447,7 @@ function FlowShell({
       observer.disconnect()
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
-  }, [navigatorOpen, fullView])
+  }, [navigatorOpen, fullView, account.id, provider, storyboard, tts])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && fullView) onToggleFullView()
