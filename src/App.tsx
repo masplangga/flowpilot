@@ -21,6 +21,16 @@ type Account = {
   order: number
 }
 type PromptItem = { id: string; title: string; prompt: string; category: string; pinned?: boolean; cardColor?: string; created_at: string; updated_at: string; order?: number }
+type UpdatePhase = "checking" | "upToDate" | "available" | "downloading" | "installing" | "relaunching" | "error"
+const UPDATE_STATUS: Record<UpdatePhase, string> = {
+  checking: "Checking for updates",
+  upToDate: "Up to date",
+  available: "Update available",
+  downloading: "Downloading",
+  installing: "Installing",
+  relaunching: "Relaunching",
+  error: "Update unavailable",
+}
 const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "blue", label: "Dark Blue" }, { id: "purple", label: "Dark Purple" }, { id: "green", label: "Dark Green" }, { id: "orange", label: "Dark Orange" }, { id: "red", label: "Dark Red" }]
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
@@ -144,6 +154,16 @@ export default function App() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
   const [prompts, setPrompts] = useState<PromptItem[]>([])
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("checking")
+  const [currentVersion, setCurrentVersion] = useState(packageJson.version)
+  const [latestVersion, setLatestVersion] = useState("—")
+  const [releaseNotes, setReleaseNotes] = useState<string[]>([])
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
+  const [updateNoticeOpen, setUpdateNoticeOpen] = useState(false)
+  const [updateError, setUpdateError] = useState("")
+  const [downloaded, setDownloaded] = useState(0)
+  const [contentLength, setContentLength] = useState<number | null>(null)
+  const updateCheckInProgress = useRef(false)
   const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null)
   const uiAccounts = useMemo(() => accounts.filter((account) => account.provider !== "migoo"), [accounts])
   const geminiAccounts = useMemo(() => uiAccounts.filter((account) => (account.provider || "google-flow") === "gemini"), [uiAccounts])
@@ -152,6 +172,60 @@ export default function App() {
   const ttsAccount = active?.provider === "gemini" && geminiAccounts.some((account) => account.id === active.id)
     ? active
     : selectedGeminiAccount || defaultGeminiAccount
+  const checkForUpdates = async () => {
+    if (updateCheckInProgress.current) return
+    updateCheckInProgress.current = true
+    setUpdatePhase("checking")
+    setUpdateError("")
+    try {
+      const installedVersion = await getVersion()
+      setCurrentVersion(installedVersion)
+      const update = await check()
+      setAvailableUpdate(update)
+      if (!update) {
+        setLatestVersion(installedVersion)
+        setReleaseNotes([])
+        setUpdateNoticeOpen(false)
+        setUpdatePhase("upToDate")
+        return
+      }
+      setLatestVersion(update.version)
+      setReleaseNotes(update.body ? update.body.split(/\r?\n/).filter(Boolean) : [])
+      setUpdatePhase("available")
+      setUpdateNoticeOpen(true)
+    } catch (error) {
+      setAvailableUpdate(null)
+      setUpdateError(error instanceof Error ? error.message : String(error))
+      setUpdatePhase("error")
+    } finally {
+      updateCheckInProgress.current = false
+    }
+  }
+  const installAvailableUpdate = async () => {
+    if (!availableUpdate) return
+    setDownloaded(0)
+    setContentLength(null)
+    setUpdateError("")
+    setUpdatePhase("downloading")
+    try {
+      await availableUpdate.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          setContentLength(event.data.contentLength ?? null)
+          setDownloaded(0)
+        } else if (event.event === "Progress") {
+          setDownloaded((value) => value + event.data.chunkLength)
+        } else if (event.event === "Finished") {
+          setUpdatePhase("installing")
+        }
+      })
+      setUpdatePhase("relaunching")
+      await relaunch()
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : String(error))
+      setUpdatePhase("error")
+    }
+  }
+  useEffect(() => { void checkForUpdates() }, [])
   useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(!saved?.status){setLicenseChecking(false);return} setLicenseState(saved); const validated=await invoke<LicenseState>("validate_license"); setLicenseState(validated); setLicensed(true); await invoke("expand_main_window"); const w=getCurrentWindow(); await w.show(); await w.setFocus() } catch (error) { setLicenseError(typeof error === "string" ? error : "Server Unavailable") } finally { setLicenseChecking(false) } })() }, [])
   useEffect(() => { if (licensed) void invoke<PromptItem[]>("list_prompts").then(setPrompts).catch(() => setPrompts([])) }, [licensed])
   const dragSourceRef = useRef<HTMLElement | null>(null)
@@ -520,6 +594,18 @@ export default function App() {
             }}
           />
         </main>
+        {updateNoticeOpen && availableUpdate && (
+          <UpdateNotice
+            currentVersion={currentVersion}
+            latestVersion={latestVersion}
+            phase={updatePhase}
+            downloaded={downloaded}
+            contentLength={contentLength}
+            error={updateError}
+            onUpdate={() => void installAvailableUpdate()}
+            onLater={() => setUpdateNoticeOpen(false)}
+          />
+        )}
       </div>
     )
   return (
@@ -626,11 +712,34 @@ export default function App() {
         ) : view === "prompts" ? (
           <PromptLibrary items={prompts} onChange={setPrompts} />
         ) : view === "settings" ? (
-          <Settings profile={profile} onAvatarChange={updateProfileAvatar} />
+          <Settings
+            profile={profile}
+            onAvatarChange={updateProfileAvatar}
+            currentVersion={currentVersion}
+            latestVersion={latestVersion}
+            phase={updatePhase}
+            available={Boolean(availableUpdate)}
+            downloaded={downloaded}
+            contentLength={contentLength}
+            error={updateError}
+            onCheck={() => void checkForUpdates()}
+            onUpdate={() => void installAvailableUpdate()}
+          />
         ) : view === "license" ? (
           <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
         ) : view === "updates" ? (
-          <UpdatesPage />
+          <UpdatesPage
+            currentVersion={currentVersion}
+            latestVersion={latestVersion}
+            releaseNotes={releaseNotes}
+            phase={updatePhase}
+            available={Boolean(availableUpdate)}
+            downloaded={downloaded}
+            contentLength={contentLength}
+            error={updateError}
+            onCheck={() => void checkForUpdates()}
+            onUpdate={() => void installAvailableUpdate()}
+          />
         ) : view === "info" ? (
           <InfoPage />
         ) : (
@@ -718,6 +827,18 @@ export default function App() {
           </div>
         )}
       </main>
+      {updateNoticeOpen && availableUpdate && (
+        <UpdateNotice
+          currentVersion={currentVersion}
+          latestVersion={latestVersion}
+          phase={updatePhase}
+          downloaded={downloaded}
+          contentLength={contentLength}
+          error={updateError}
+          onUpdate={() => void installAvailableUpdate()}
+          onLater={() => setUpdateNoticeOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -1044,107 +1165,76 @@ function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | nul
     </div>
   )
 }
-function UpdatesPage() {
-  type UpdatePhase = "checking" | "upToDate" | "available" | "downloading" | "installing" | "relaunching" | "error"
-  const [phase, setPhase] = useState<UpdatePhase>("checking")
-  const [currentVersion, setCurrentVersion] = useState("—")
-  const [latestVersion, setLatestVersion] = useState("—")
-  const [releaseNotes, setReleaseNotes] = useState<string[]>([])
-  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
-  const [downloaded, setDownloaded] = useState(0)
-  const [contentLength, setContentLength] = useState<number | null>(null)
-  const checking = useRef(false)
-
-  const checkForUpdates = async () => {
-    if (checking.current) return
-    checking.current = true
-    setPhase("checking")
-    try {
-      const installedVersion = await getVersion()
-      setCurrentVersion(installedVersion)
-      const update = await check()
-      setAvailableUpdate(update)
-      if (!update) {
-        setLatestVersion(installedVersion)
-        setReleaseNotes([])
-        setPhase("upToDate")
-        return
-      }
-      setLatestVersion(update.version)
-      setReleaseNotes(update.body ? update.body.split(/\r?\n/).filter(Boolean) : [])
-      setPhase("available")
-    } catch {
-      setAvailableUpdate(null)
-      setPhase("error")
-    } finally {
-      checking.current = false
-    }
-  }
-
-  useEffect(() => {
-    void checkForUpdates()
-  }, [])
-
-  const installUpdate = async () => {
-    if (!availableUpdate) return
-    setDownloaded(0)
-    setContentLength(null)
-    setPhase("downloading")
-    try {
-      await availableUpdate.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          setContentLength(event.data.contentLength ?? null)
-          setDownloaded(0)
-        } else if (event.event === "Progress") {
-          setDownloaded((value) => value + event.data.chunkLength)
-        } else if (event.event === "Finished") {
-          setPhase("installing")
-        }
-      })
-      setPhase("relaunching")
-      await relaunch()
-    } catch {
-      setPhase("error")
-    }
-  }
-
-  const status: Record<UpdatePhase, string> = {
-    checking: "Checking for updates",
-    upToDate: "Up to date",
-    available: "Update available",
-    downloading: "Downloading",
-    installing: "Installing",
-    relaunching: "Relaunching",
-    error: "Update unavailable",
-  }
-  const progress = contentLength ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null
+type UpdatePanelProps = {
+  currentVersion: string
+  latestVersion: string
+  phase: UpdatePhase
+  available: boolean
+  downloaded: number
+  contentLength: number | null
+  error: string
+  onCheck: () => void
+  onUpdate: () => void
+}
+function UpdatePanel({ currentVersion, latestVersion, phase, available, downloaded, contentLength, error, onCheck, onUpdate }: UpdatePanelProps) {
   const busy = phase === "checking" || phase === "downloading" || phase === "installing" || phase === "relaunching"
+  const progress = contentLength ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null
+  const updateLabel = phase === "downloading" ? "Downloading…" : phase === "installing" ? "Installing…" : phase === "relaunching" ? "Relaunching…" : "Update Now"
+  return (
+    <section className="info-card update-panel" aria-label="Application Update">
+      <div className="update-version-row">
+        <div><div className="eyebrow">CURRENT VERSION</div><h2>{currentVersion}</h2></div>
+        <div><div className="eyebrow">LATEST VERSION</div><h2>{latestVersion}</h2></div>
+        <span className="badge" role="status">{UPDATE_STATUS[phase]}</span>
+      </div>
+      <div className="update-action-row">
+        <button className="secondary" onClick={onCheck} disabled={busy}>Check for Updates</button>
+        {available && <button className="primary" onClick={onUpdate} disabled={busy}>{updateLabel}</button>}
+      </div>
+      {phase === "downloading" && <div className="update-progress" role="status">{progress === null ? `${Math.round(downloaded / 1024)} KB downloaded` : `${progress}% downloaded`}</div>}
+      {phase === "error" && <p className="update-error" role="alert">{error || "The update check or installation failed. Check your connection and try again."}</p>}
+    </section>
+  )
+}
 
+function UpdatesPage(props: UpdatePanelProps & { releaseNotes: string[] }) {
   return (
     <div className="feature-page">
-      <section className="info-card">
-        <div>
-          <div className="eyebrow">CURRENT VERSION</div>
-          <h2>{currentVersion}</h2>
-        </div>
-        <div>
-          <div className="eyebrow">LATEST VERSION</div>
-          <h2>{latestVersion}</h2>
-        </div>
-        <span className="badge">{status[phase]}</span>
-        <button className="primary" disabled={busy || phase === "upToDate" || !availableUpdate} onClick={() => void installUpdate()}>
-          {phase === "downloading" ? "Downloading…" : phase === "installing" ? "Installing…" : phase === "relaunching" ? "Relaunching…" : "Update Now"}
-        </button>
-        {phase === "error" && <button className="secondary" onClick={() => void checkForUpdates()}>Retry</button>}
-        {phase === "downloading" && <div className="update-progress" role="status">{progress === null ? `${Math.round(downloaded / 1024)} KB downloaded` : `${progress}% downloaded`}</div>}
-      </section>
+      <UpdatePanel {...props} />
       <section className="info-card release-notes">
         <div className="eyebrow">WHAT'S NEW</div>
-        {releaseNotes.length === 0 && <p>{phase === "upToDate" ? "You are using the latest version." : "Release notes are not available."}</p>}
-        {releaseNotes.map((note) => (
-          <p key={note}>• {note}</p>
-        ))}
+        {props.releaseNotes.length === 0 && <p>{props.phase === "upToDate" ? "You are using the latest version." : "Release notes are not available."}</p>}
+        {props.releaseNotes.map((note) => <p key={note}>• {note}</p>)}
       </section>
+    </div>
+  )
+}
+
+function UpdateNotice({ currentVersion, latestVersion, phase, downloaded, contentLength, error, onUpdate, onLater }: {
+  currentVersion: string
+  latestVersion: string
+  phase: UpdatePhase
+  downloaded: number
+  contentLength: number | null
+  error: string
+  onUpdate: () => void
+  onLater: () => void
+}) {
+  const busy = phase === "checking" || phase === "downloading" || phase === "installing" || phase === "relaunching"
+  const progress = contentLength ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null
+  return (
+    <div className="overlay update-notice-overlay">
+      <div className="dialog update-notice" role="dialog" aria-modal="true" aria-labelledby="update-notice-title">
+        <div className="eyebrow">APPLICATION UPDATE</div>
+        <h2 id="update-notice-title">Update available</h2>
+        <p>Flowpilot {currentVersion} can be updated to version {latestVersion}.</p>
+        {phase === "downloading" && <p className="update-progress" role="status">{progress === null ? `${Math.round(downloaded / 1024)} KB downloaded` : `${progress}% downloaded`}</p>}
+        {phase === "error" && <p className="update-error" role="alert">{error || "The update could not be installed. Check your connection and try again."}</p>}
+        <div className="dialog-actions">
+          <button className="secondary" onClick={onLater} disabled={busy}>Later</button>
+          <button className="primary" onClick={onUpdate} disabled={busy}>{phase === "downloading" ? "Downloading…" : phase === "installing" ? "Installing…" : phase === "relaunching" ? "Relaunching…" : "Update Now"}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1347,9 +1437,27 @@ function DragPreview({ account, point, offset }: { account: Account | null; poin
 function Settings({
   profile,
   onAvatarChange,
+  currentVersion,
+  latestVersion,
+  phase,
+  available,
+  downloaded,
+  contentLength,
+  error,
+  onCheck,
+  onUpdate,
 }: {
   profile: { name: string; avatar: string | null }
   onAvatarChange: (avatar: string) => void
+  currentVersion: string
+  latestVersion: string
+  phase: UpdatePhase
+  available: boolean
+  downloaded: number
+  contentLength: number | null
+  error: string
+  onCheck: () => void
+  onUpdate: () => void
 }) {
   return (
     <div className="settings">
@@ -1404,6 +1512,17 @@ function Settings({
         </div>
         <span className="badge">LOCAL ONLY</span>
       </section>
+      <UpdatePanel
+        currentVersion={currentVersion}
+        latestVersion={latestVersion}
+        phase={phase}
+        available={available}
+        downloaded={downloaded}
+        contentLength={contentLength}
+        error={error}
+        onCheck={onCheck}
+        onUpdate={onUpdate}
+      />
       <section>
         <div>
           <div className="eyebrow">ABOUT</div>

@@ -3,3 +3,16 @@
   color: #aaf28f;
   font-size: 0.8rem;
 }
+.update-panel{display:flex;flex-direction:column;align-items:stretch;gap:18px;min-width:0}
+.update-version-row{display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+.update-version-row h2{margin:7px 0 0;color:#e8e9e9;font-size:20px;font-weight:500}
+.update-version-row .badge{margin-left:auto}
+.update-action-row{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.update-error{flex-basis:100%;margin:0;color:#ff9c9c;font-size:12px;line-height:1.5}
+.settings .update-panel{width:100%;align-items:stretch}
+.settings .update-panel>.update-action-row{flex:initial}
+.update-notice-overlay{z-index:1100}
+.update-notice h2{margin:8px 0 12px}
+.update-notice p{font-size:13px;line-height:1.6}
+.update-notice .update-progress{margin:12px 0}
+@media(max-width:650px){.update-version-row{align-items:flex-start;gap:18px}.update-version-row .badge{margin-left:0}.update-action-row{justify-content:flex-start}}
