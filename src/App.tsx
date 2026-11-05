@@ -7,8 +7,9 @@ import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
+import { canPersistAccountList } from "./services/account-store-core.js"
 
-type Provider = "google-flow" | "dola" | "migoo" | "gemini"
+type Provider = "google-flow" | "dola" | "migoo" | "gemini" | "suno"
 type Account = {
   provider: Provider
   id: string
@@ -24,8 +25,8 @@ const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "b
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
-const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : "Google Flow"
-const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : (avatarUrl || "/google-flow.png")
+const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : provider === "suno" ? "Suno" : "Google Flow"
+const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : provider === "suno" ? "/suno.jpg" : (avatarUrl || "/google-flow.png")
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
@@ -97,6 +98,8 @@ export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [provider, setProvider] = useState<Provider>("google-flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
+  const [accountsLoadError, setAccountsLoadError] = useState<string | null>(null)
+  const [accountsLoadAttempt, setAccountsLoadAttempt] = useState(0)
   const [profile, setProfile] = useState<{
     name: string
     avatar: string | null
@@ -228,10 +231,25 @@ export default function App() {
   }
   useEffect(() => {
     if (!licensed || accountsLoaded) return
-    void loadAccounts().then((saved) => setAccounts((saved as Account[]).map((account) => ({ ...account, provider: account.provider || "google-flow" })))).finally(() => setAccountsLoaded(true))
-  }, [licensed, accountsLoaded])
+    let cancelled = false
+    setAccountsLoadError(null)
+    void loadAccounts()
+      .then((saved) => {
+        if (cancelled) return
+        setAccounts(saved as Account[])
+        setAccountsLoaded(true)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error("Flowpilot account data could not be loaded", error)
+        setAccountsLoadError(error instanceof Error ? error.message : String(error))
+      })
+    return () => { cancelled = true }
+  }, [licensed, accountsLoaded, accountsLoadAttempt])
   useEffect(() => {
-    if (licensed && accountsLoaded) void saveAccounts(accounts)
+    if (canPersistAccountList(licensed, accountsLoaded)) {
+      void saveAccounts(accounts).catch((error) => console.error("Flowpilot account data could not be saved", error))
+    }
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
     const webviewView = view === "flow" || view === "storyboard" || (view === "tts" && ttsAccount !== null)
@@ -445,6 +463,29 @@ export default function App() {
         </div>
       </div>
     )
+  if (!accountsLoaded)
+    return (
+      <div className="gate" onContextMenu={(event) => event.preventDefault()}>
+        <div className="gate-card">
+          <Brand />
+          {accountsLoadError ? (
+            <>
+              <h1>Accounts could not be loaded</h1>
+              <p role="alert">{accountsLoadError}</p>
+              <p>Your saved account file has been left unchanged. Retry after checking that it is accessible and valid.</p>
+              <button className="primary wide" onClick={() => setAccountsLoadAttempt((attempt) => attempt + 1)}>
+                Retry loading accounts
+              </button>
+            </>
+          ) : (
+            <>
+              <h1>Loading saved accounts</h1>
+              <p>Flowpilot is reading your account list. Account editing is paused until the saved data is verified.</p>
+            </>
+          )}
+        </div>
+      </div>
+    )
   if ((view === "flow" || view === "storyboard") && active || (view === "tts" && ttsAccount))
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
@@ -549,6 +590,7 @@ export default function App() {
                 <button className={provider === "google-flow" ? "active" : ""} onClick={() => setProvider("google-flow")}>Google Flow</button>
                 <button className={provider === "dola" ? "active" : ""} onClick={() => setProvider("dola")}>Dola</button>
                 <button className={provider === "gemini" ? "active" : ""} onClick={() => setProvider("gemini")}>Gemini</button>
+                <button className={provider === "suno" ? "active" : ""} onClick={() => setProvider("suno")}>Suno</button>
               </div>
             )}
           </div>
@@ -649,7 +691,7 @@ export default function App() {
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
               <p>Choose a provider and enter an account name.</p>
-              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button></div>
+              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button><button className={newAccountProvider === "suno" ? "active" : ""} onClick={() => setNewAccountProvider("suno")}>Suno</button></div>
               <input
                 autoFocus
                 value={newAccountName}
@@ -684,6 +726,7 @@ function Brand() {
     <div className="brand">
       <img className="brand-image" src="/foursquare.png" alt="Flowpilot logo" />
       <span>FLOWPILOT</span>
+      <small className="brand-version">v{APP_VERSION}</small>
     </div>
   )
 }

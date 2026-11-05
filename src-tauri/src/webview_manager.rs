@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex};
 
 use tauri::path::BaseDirectory;
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
@@ -84,9 +84,36 @@ const GEMINI_TTS_BRANDING_SCRIPT: &str = r#"(() => {
 })()"#;
 const MIGOO_URL: &str = "https://migoo.ai/";
 const GEMINI_URL: &str = "https://gemini.google.com/app";
+const SUNO_URL: &str = "https://suno.com/";
 const GEMINI_TTS_URL: &str = "https://share.gemini.google/jLVZLHqihx0e";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
+
+fn is_allowed_suno_host(host: &str) -> bool {
+    matches!(
+        host,
+        "suno.com"
+            | "www.suno.com"
+            | "auth.suno.com"
+            | "accounts.google.com"
+            | "accounts.google.co.id"
+            | "consent.google.com"
+            | "google.com"
+            | "www.google.com"
+            | "accounts.youtube.com"
+            | "youtube.com"
+            | "www.youtube.com"
+            | "m.youtube.com"
+            | "youtu.be"
+            | "appleid.apple.com"
+            | "discord.com"
+            | "www.discord.com"
+            | "facebook.com"
+            | "www.facebook.com"
+            | "login.microsoftonline.com"
+            | "login.live.com"
+    )
+}
 
 #[cfg(windows)]
 fn extension_for_mime(mime: &str) -> Option<&'static str> {
@@ -237,7 +264,7 @@ impl Default for WebviewManager {
 }
 
 fn webview_label(account_id: &str, provider: Option<&str>) -> String {
-    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("suno") => "suno", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
 }
 
 fn touch_webview(state: &WebviewManager, label: &str) -> Result<(), String> {
@@ -387,12 +414,13 @@ pub fn open<R: Runtime>(
             "dola" => DOLA_URL,
             "migoo" => MIGOO_URL,
             "gemini" => GEMINI_URL,
+            "suno" => SUNO_URL,
             "gemini-tts" => GEMINI_TTS_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         };
         let should_navigate = match provider.as_str() {
-            "storyboard" | "gemini-tts" => force_navigation,
+            "storyboard" | "gemini-tts" | "suno" => force_navigation,
             _ => true,
         };
         let mode_script = match provider.as_str() {
@@ -463,6 +491,7 @@ pub fn open<R: Runtime>(
             "dola" => DOLA_URL,
             "migoo" => MIGOO_URL,
             "gemini" => GEMINI_URL,
+            "suno" => SUNO_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         }
@@ -478,15 +507,20 @@ pub fn open<R: Runtime>(
         "storyboard" => format!("window.__flowpilotStoryboardMode = true;\n{}", STORYBOARD_LOGIN_SCRIPT),
         "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT.to_string(),
         "gemini-tts" => GEMINI_TTS_BRANDING_SCRIPT.to_string(),
+        "suno" => String::new(),
         _ => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
     };
 
     let persist_tts_url = provider == "gemini-tts";
     let allow_google_popups = persist_tts_url;
+    let allow_suno_popups = provider == "suno";
+    let restrict_suno_navigation = allow_suno_popups;
     let tts_login_seen = Arc::new(AtomicBool::new(false));
     let tts_redirect_target = initial_url.clone();
     let persistence_app = app.clone();
     let persistence_account_id = account_id.clone();
+    let popup_app = app.clone();
+    let popup_account_id = account_id.clone();
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
         .initialization_script_for_all_frames(&initialization_script)
@@ -503,7 +537,12 @@ pub fn open<R: Runtime>(
                         url.as_str(),
                     );
                 }
-                url.scheme() == "https"
+                if restrict_suno_navigation {
+                    url.scheme() == "https"
+                        && is_allowed_suno_host(url.host_str().unwrap_or_default())
+                } else {
+                    url.scheme() == "https"
+                }
             }
         })
         .on_page_load({
@@ -521,7 +560,7 @@ pub fn open<R: Runtime>(
                 }
             }
         })
-        .on_new_window(move |url, _| {
+        .on_new_window(move |url, features| {
             let host = url.host_str().unwrap_or_default();
             if allow_google_popups
                 && url.scheme() == "https"
@@ -531,6 +570,48 @@ pub fn open<R: Runtime>(
                     || host.ends_with(".google"))
             {
                 tauri::webview::NewWindowResponse::Allow
+            } else if allow_suno_popups
+                && url.scheme() == "https"
+                && is_allowed_suno_host(host)
+            {
+                #[cfg(windows)]
+                {
+                    static POPUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+                    let popup_label = format!(
+                        "suno-popup-{}-{}",
+                        popup_account_id,
+                        POPUP_COUNTER.fetch_add(1, Ordering::Relaxed)
+                    );
+                    let environment = features.opener().environment.clone();
+                    let popup = tauri::webview::WebviewWindowBuilder::new(
+                        &popup_app,
+                        popup_label,
+                        WebviewUrl::External(url.clone()),
+                    )
+                    .title("Suno sign in")
+                    .window_features(features)
+                    .with_environment(environment)
+                    .on_navigation(|target| {
+                        target.scheme() == "https"
+                            && target.host_str().is_some_and(is_allowed_suno_host)
+                    })
+                    .build();
+                    match popup {
+                        Ok(window) => {
+                            let _ = window.set_focus();
+                            tauri::webview::NewWindowResponse::Create { window }
+                        }
+                        Err(error) => {
+                            eprintln!("Suno sign-in popup failed to open: {error}");
+                            tauri::webview::NewWindowResponse::Deny
+                        }
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (popup_app, popup_account_id, features);
+                    tauri::webview::NewWindowResponse::Deny
+                }
             } else {
                 tauri::webview::NewWindowResponse::Deny
             }
@@ -647,6 +728,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         webview_label(&account_id, Some("dola")),
         webview_label(&account_id, Some("migoo")),
         webview_label(&account_id, Some("gemini")),
+        webview_label(&account_id, Some("suno")),
         webview_label(&account_id, Some("gemini-tts")),
     ];
     for label in &labels {
@@ -736,5 +818,6 @@ mod tests {
     fn tts_has_its_own_view_label_for_the_gemini_account() {
         assert_eq!(webview_label("account-id", Some("gemini-tts")), "flowpilot-tts-account-id");
         assert_eq!(webview_label("account-id", Some("gemini")), "gemini-account-id");
+        assert_eq!(webview_label("account-id", Some("suno")), "suno-account-id");
     }
 }
