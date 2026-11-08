@@ -1,11 +1,11 @@
-//! Lifecycle-aware Google Flow blob download coordinator.
+//! Lifecycle-aware WebView blob download coordinator.
 //!
 //! The remote WebView only talks to Tauri IPC commands. Native dialogs, file
 //! state and finalization are owned by Tauri; no WebView2 COM callback is used.
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -36,7 +36,11 @@ pub struct DownloadState {
 
 fn validate_caller<R: Runtime>(webview: &Webview<R>) -> Result<String, String> {
     let label = webview.label().to_string();
-    if label.starts_with("google-flow-") || label.starts_with("dola-") || label.starts_with("migoo-") {
+    if label.starts_with("google-flow-")
+        || label.starts_with("dola-")
+        || label.starts_with("migoo-")
+        || label.starts_with("chatgpt-")
+    {
         Ok(label)
     } else {
         Err("download command rejected for this WebView".into())
@@ -67,11 +71,15 @@ fn safe_filename(value: &str) -> String {
             }
         })
         .collect();
-    if value.trim().is_empty() {
-        value = "Flowpilot_Video.mp4".into();
+    while value.ends_with(' ') || value.ends_with('.') {
+        value.pop();
     }
-    if !value.to_ascii_lowercase().ends_with(".mp4") {
-        value.push_str(".mp4");
+    if value.trim().is_empty() {
+        value = "download".into();
+    }
+    let base = value.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9") {
+        value.insert(0, '_');
     }
     value
 }
@@ -124,11 +132,20 @@ pub async fn begin_blob_download<R: Runtime>(
     let suggested_name = safe_filename(&filename);
     if ENABLE_NATIVE_SAVE_AS {
         let last_folder = state.last_folder.lock().map_err(|_| "download folder state unavailable")?.clone();
-        let selected = crate::dialog_thread_experiment::request_dialog(last_folder, suggested_name.clone()).await?;
+        let selected = crate::dialog_thread_experiment::request_dialog(
+            webview.window(),
+            last_folder,
+            suggested_name.clone(),
+        )
+        .await?;
         let Some(mut destination) = selected else {
             return Ok(false);
         };
-        if destination.extension().is_none() { destination.set_extension("mp4"); }
+        if destination.extension().is_none() {
+            if let Some(extension) = Path::new(&suggested_name).extension() {
+                destination.set_extension(extension);
+            }
+        }
         let partial = partial_path(&destination);
         let file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(&partial).map_err(|e| e.to_string())?;
         if let Some(parent) = destination.parent() { *state.last_folder.lock().map_err(|_| "download folder state unavailable")? = Some(parent.to_path_buf()); }
@@ -136,11 +153,18 @@ pub async fn begin_blob_download<R: Runtime>(
         return Ok(true);
     }
     let last_folder = state.last_folder.lock().map_err(|_| "download folder state unavailable")?.clone();
-    let Some(mut destination) = crate::dialog_thread_experiment::request_dialog(last_folder, suggested_name.clone()).await? else {
+    let Some(mut destination) = crate::dialog_thread_experiment::request_dialog(
+        webview.window(),
+        last_folder,
+        suggested_name.clone(),
+    )
+    .await? else {
         return Ok(false);
     };
     if destination.extension().is_none() {
-        destination.set_extension("mp4");
+        if let Some(extension) = Path::new(&suggested_name).extension() {
+            destination.set_extension(extension);
+        }
     }
     let partial = partial_path(&destination);
     let file = OpenOptions::new()
@@ -227,21 +251,12 @@ pub fn complete_blob_download<R: Runtime>(
         pending.remove(&id).ok_or("download is no longer active")?
     };
     if item.failed || item.bytes == 0 {
-        return Err("download did not produce a valid file".into());
+        return Err("download did not produce a non-empty file".into());
     }
     let file = item.file.as_mut().ok_or("download file is closed")?;
     file.flush().map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
 
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| error.to_string())?;
-    let mut header = [0_u8; 12];
-    file.read_exact(&mut header)
-        .map_err(|_| "download is not a valid MP4 file".to_string())?;
-
-    if &header[4..8] != b"ftyp" {
-        return Err("download is not a valid MP4 file".into());
-    }
     drop(item.file.take());
     atomic_replace(&item.partial, &item.destination)?;
     Ok(())
@@ -336,15 +351,31 @@ pub const INIT_SCRIPT: &str = r#"(() => {
     }
   }
 
+  window.__flowpilotSaveBlob = async (filename, blobPromise) => {
+    const id = `blob-${crypto.randomUUID()}`;
+    pending.set(id, true);
+    try {
+      const accepted = await invoke('begin_blob_download', { id, filename });
+      if (!accepted) {
+        pending.delete(id);
+        return;
+      }
+      await transfer(id, await blobPromise);
+    } catch (error) {
+      console.error('[Flowpilot] file download failed', error);
+      await cancel(id);
+      throw error;
+    }
+  };
+
   HTMLAnchorElement.prototype.click = function (...args) {
     const href = this.href || '';
-    const isVideoDownload = this.download &&
-      (href.startsWith('blob:') || href.startsWith('https:'));
+    const isBlobDownload = Boolean(this.download) && href.startsWith('blob:');
     if (this.download) {
       const scheme = href.split(':', 1)[0] || 'other';
       lastDownloadHref = href;
     }
-    if (ENABLE_NATIVE_SAVE_AS && isVideoDownload) {
+    if (ENABLE_NATIVE_SAVE_AS && isBlobDownload) {
       const id = `blob-${crypto.randomUUID()}`;
       const blobPromise = fetch(href, { credentials: 'include' }).then(response => {
         if (!response.ok) throw new Error('blob fetch failed');
@@ -355,14 +386,15 @@ pub const INIT_SCRIPT: &str = r#"(() => {
         try {
           const accepted = await invoke('begin_blob_download', {
             id,
-            filename: this.download || 'Flowpilot_Video.mp4'
+            filename: this.download || 'download'
           });
           if (!accepted) {
             pending.delete(id);
             return;
           }
           await transfer(id, await blobPromise);
-        } catch (_) {
+        } catch (error) {
+          console.error('[Flowpilot] file download failed', error);
           await cancel(id);
         }
       })();
@@ -376,16 +408,59 @@ pub const INIT_SCRIPT: &str = r#"(() => {
   });
 })();"#;
 
+pub const CHATGPT_IMAGE_DOWNLOAD_SCRIPT: &str = r#"(() => {
+  if (window.__flowpilotChatgptImageDownloadInstalled) return;
+  window.__flowpilotChatgptImageDownloadInstalled = true;
+  let retryingOriginalClick = false;
+
+  document.addEventListener('click', (event) => {
+    if (retryingOriginalClick) return;
+    const button = event.target?.closest?.('button');
+    if (!button) return;
+    const label = (button.getAttribute('aria-label') || button.getAttribute('title') || button.innerText || '').trim();
+    if (label !== 'Download') return;
+
+    const dialog = button.closest('[role="dialog"]');
+    const images = Array.from((dialog || document).querySelectorAll('img'));
+    const image = images
+      .filter((candidate) => candidate.complete && candidate.naturalWidth >= 256)
+      .sort((a, b) => {
+        const aRect = a.getBoundingClientRect();
+        const bRect = b.getBoundingClientRect();
+        return bRect.width * bRect.height - aRect.width * aRect.height;
+      })[0];
+    if (!image || !image.currentSrc || !window.__flowpilotSaveBlob) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void (async () => {
+      try {
+        const title = (dialog?.querySelector('h1, h2, h3')?.textContent || 'ChatGPT image').trim();
+        const blobPromise = fetch(image.currentSrc, { credentials: 'include' }).then((response) => {
+          if (!response.ok) throw new Error(`Image request failed: ${response.status}`);
+          return response.blob();
+        });
+        await window.__flowpilotSaveBlob(`${title}.png`, blobPromise);
+      } catch (error) {
+        console.error('[Flowpilot] image Save As failed', error);
+        retryingOriginalClick = true;
+        try { button.click(); } finally { retryingOriginalClick = false; }
+      }
+    })();
+  }, true);
+})();"#;
+
 #[cfg(test)]
 mod tests {
     use super::{partial_path, safe_filename, validate_id};
     use std::path::Path;
 
     #[test]
-    fn filename_is_sanitized_and_has_mp4_extension() {
-        assert_eq!(safe_filename("video:name"), "video_name.mp4");
+    fn filename_is_sanitized_and_preserves_file_type() {
+        assert_eq!(safe_filename("video:name.png"), "video_name.png");
         assert_eq!(safe_filename("movie.MP4"), "movie.MP4");
-        assert_eq!(safe_filename(""), "Flowpilot_Video.mp4");
+        assert_eq!(safe_filename(""), "download");
+        assert_eq!(safe_filename("../report.pdf"), ".._report.pdf");
     }
 
     #[test]

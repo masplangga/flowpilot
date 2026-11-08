@@ -9,7 +9,7 @@ import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 import { canPersistAccountList } from "./services/account-store-core.js"
 
-type Provider = "google-flow" | "dola" | "migoo" | "gemini" | "suno"
+type Provider = "google-flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt"
 type Account = {
   provider: Provider
   id: string
@@ -33,10 +33,10 @@ const UPDATE_STATUS: Record<UpdatePhase, string> = {
 }
 const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "blue", label: "Dark Blue" }, { id: "purple", label: "Dark Purple" }, { id: "green", label: "Dark Green" }, { id: "orange", label: "Dark Orange" }, { id: "red", label: "Dark Red" }]
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
-const TELEGRAM_CHANNEL_URL = ""
+const TELEGRAM_CHANNEL_URL = "https://t.me/+Z-7gujGSHxNiY2Rl"
 const APP_VERSION = packageJson.version
-const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : provider === "suno" ? "Suno" : "Google Flow"
-const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : provider === "suno" ? "/suno.jpg" : (avatarUrl || "/google-flow.png")
+const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : provider === "suno" ? "Suno" : provider === "chatgpt" ? "ChatGPT" : "Google Flow"
+const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : provider === "suno" ? "/suno.jpg" : provider === "chatgpt" ? "/chatgpt.jpg" : (avatarUrl || "/google-flow.png")
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
@@ -127,9 +127,6 @@ export default function App() {
   const [view, setView] = useState<
     | "accounts"
     | "favorites"
-    | "license"
-    | "updates"
-    | "info"
     | "settings"
     | "prompts"
     | "flow"
@@ -526,9 +523,10 @@ export default function App() {
             {licenseChecking ? "Activating…" : "Activate Flowpilot →"}
           </button>
           {licenseError && <p className="dialog-error">{licenseError}</p>}
-          <div className="link">
-            Get your Flowpilot license from your referrer
-          </div>
+          <button className="purchase-link" onClick={() => void openLicensePurchase()}>
+            <span>Buy a Lifetime license</span>
+            <b>30% OFF</b>
+          </button>
           <small>
             🔒 Your Google account login is handled directly in Google Flow.
             <br />
@@ -585,7 +583,11 @@ export default function App() {
               if (account.provider === "gemini") setSelectedGeminiAccountId(account.id)
               if (account.id !== active?.id) setActive(account)
             }}
-            onRetry={() => setStoryboardForceNavigation(true)}
+            onRetry={() => {
+              if (view === "storyboard") {
+                setStoryboardForceNavigation(true)
+              }
+            }}
             onBack={() => {
               void invoke("close_google_flow")
               setFullView(false)
@@ -635,31 +637,19 @@ export default function App() {
                 ? "PROMPTS"
                 : view === "storyboard"
                 ? "Storyboard"
-                : view === "license"
-                ? "License"
-                : view === "updates"
-                ? "Updates"
-                : view === "info"
-                ? "How to Use Flowpilot"
                 : `${providerLabel(provider)} Accounts`}
             </h1>
             <p>
               {view === "tts"
                 ? "Create speech with Gemini using the selected Gemini account."
                 : view === "settings"
-                ? "Keep Flowpilot personal, private, and ready to use."
+                ? "Manage your profile, license, updates, and app information in one place."
                 : view === "favorites"
                 ? "Your favorite Google Flow accounts in one place."
                 : view === "prompts"
                 ? "Create, organize, and reuse your prompts."
                 : view === "storyboard"
                 ? "Open Storyboard Studio with your selected Google Flow account."
-                : view === "license"
-                ? "Choose the Flowpilot license that fits your needs."
-                : view === "updates"
-                ? "Keep Flowpilot up to date with the latest version."
-                : view === "info"
-                ? "A quick guide to managing your Google Flow accounts."
                 : `Manage your ${providerLabel(provider)} accounts in one place.`}
             </p>
             {view === "accounts" && (
@@ -677,6 +667,7 @@ export default function App() {
                 <button className={provider === "dola" ? "active" : ""} onClick={() => setProvider("dola")}>Dola</button>
                 <button className={provider === "gemini" ? "active" : ""} onClick={() => setProvider("gemini")}>Gemini</button>
                 <button className={provider === "suno" ? "active" : ""} onClick={() => setProvider("suno")}>Suno</button>
+                <button className={provider === "chatgpt" ? "active" : ""} onClick={() => setProvider("chatgpt")}>ChatGPT</button>
               </div>
             )}
           </div>
@@ -724,24 +715,10 @@ export default function App() {
             error={updateError}
             onCheck={() => void checkForUpdates()}
             onUpdate={() => void installAvailableUpdate()}
-          />
-        ) : view === "license" ? (
-          <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
-        ) : view === "updates" ? (
-          <UpdatesPage
-            currentVersion={currentVersion}
-            latestVersion={latestVersion}
+            licenseState={licenseState}
+            onBuy={() => void openLicensePurchase()}
             releaseNotes={releaseNotes}
-            phase={updatePhase}
-            available={Boolean(availableUpdate)}
-            downloaded={downloaded}
-            contentLength={contentLength}
-            error={updateError}
-            onCheck={() => void checkForUpdates()}
-            onUpdate={() => void installAvailableUpdate()}
           />
-        ) : view === "info" ? (
-          <InfoPage />
         ) : (
           <>
             <div className="grid">
@@ -797,10 +774,10 @@ export default function App() {
         )}
         {addAccountOpen && (
           <div className="overlay">
-            <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
+            <div className="dialog add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
               <p>Choose a provider and enter an account name.</p>
-              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button><button className={newAccountProvider === "suno" ? "active" : ""} onClick={() => setNewAccountProvider("suno")}>Suno</button></div>
+              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button><button className={newAccountProvider === "suno" ? "active" : ""} onClick={() => setNewAccountProvider("suno")}>Suno</button><button className={newAccountProvider === "chatgpt" ? "active" : ""} onClick={() => setNewAccountProvider("chatgpt")}>ChatGPT</button></div>
               <input
                 autoFocus
                 value={newAccountName}
@@ -937,6 +914,42 @@ function Sidebar({
   onStoryboard: () => void
   onTts: () => void
 }) {
+  const [clockNow, setClockNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const expiryTime = licenseState?.expires_at ? new Date(licenseState.expires_at).getTime() : null
+  const remainingMs = expiryTime !== null && Number.isFinite(expiryTime) ? Math.max(0, expiryTime - clockNow) : null
+  const countdown = licenseState?.lifetime
+    ? "Lifetime"
+    : remainingMs === null
+    ? "—"
+    : remainingMs <= 0
+    ? "Expired"
+    : (() => {
+        const seconds = Math.floor(remainingMs / 1000)
+        const days = Math.floor(seconds / 86400)
+        const hours = Math.floor((seconds % 86400) / 3600)
+        const minutes = Math.floor((seconds % 3600) / 60)
+        const secs = seconds % 60
+        return days > 0
+          ? `${days}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m`
+          : `${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`
+      })()
+  const planDurationMs: Record<string, number> = {
+    five_minutes: 5 * 60 * 1000,
+    one_day: 24 * 60 * 60 * 1000,
+    seven_days: 7 * 24 * 60 * 60 * 1000,
+    thirty_days: 30 * 24 * 60 * 60 * 1000,
+    one_year: 365 * 24 * 60 * 60 * 1000,
+  }
+  const durationMs = licenseState ? planDurationMs[licenseState.plan] : undefined
+  const timeProgress = remainingMs !== null && durationMs
+    ? Math.max(0, Math.min(100, (remainingMs / durationMs) * 100))
+    : remainingMs === null && licenseState?.lifetime
+    ? 100
+    : null
   return (
     <aside onContextMenu={(event) => event.preventDefault()}>
       <Brand />
@@ -965,24 +978,6 @@ function Sidebar({
       <div className="rule" />
       <div className="side-label">GENERAL</div>
       <button
-        className={view === "license" ? "active" : ""}
-        onClick={() => setView("license")}
-      >
-        <SidebarIcon name="license" /> <span>License</span>
-      </button>
-      <button
-        className={view === "updates" ? "active" : ""}
-        onClick={() => setView("updates")}
-      >
-        <SidebarIcon name="updates" /> <span>Updates</span>
-      </button>
-      <button
-        className={view === "info" ? "active" : ""}
-        onClick={() => setView("info")}
-      >
-        <SidebarIcon name="info" /> <span>Info</span>
-      </button>
-      <button
         className={view === "settings" ? "active" : ""}
         onClick={() => setView("settings")}
       >
@@ -998,10 +993,18 @@ function Sidebar({
         </div>
         <div>
           <div className="side-license-info">
-            <small>
-              <span>License {licenseState ? licenseStatusLabel(licenseState.status) : "Unavailable"}: <b>{licenseState ? licensePlanLabel(licenseState.plan) : "—"}</b></span>
-              <span>Expired: <b>{licenseExpiryLabel(licenseState)}</b></span>
-            </small>
+            <div className="license-summary">
+              <span>LICENSE <b>{licenseState ? licenseStatusLabel(licenseState.status) : "Unavailable"}</b></span>
+              <strong>{licenseState ? licensePlanLabel(licenseState.plan) : "No license"}</strong>
+            </div>
+            <div className="license-countdown-row">
+              <span>{licenseState?.lifetime ? "Access" : "Time left"}</span>
+              <strong>{countdown}</strong>
+            </div>
+            {timeProgress !== null && <div className="license-timer-track" role="progressbar" aria-label="License time remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(timeProgress)}>
+              <span className="license-timer-fill" style={{ width: `${timeProgress}%` }} />
+            </div>}
+            <span className="license-expiry">{licenseState?.lifetime ? "Lifetime access" : `Expires ${licenseExpiryLabel(licenseState)}`}</span>
           </div>
         </div>
       </div>
@@ -1133,7 +1136,7 @@ function FlowpilotTts({
 }
 function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | null; onBuy: () => void }) {
   return (
-    <div className="feature-page">
+    <div className="feature-page license-settings-panel">
       <div className="plan-grid">
         {plans.map((plan) => (
           <section className="plan-card" key={plan.name}>
@@ -1145,8 +1148,10 @@ function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | nul
         ))}
       </div>
       <section className="license-info">
-        <div className="eyebrow">CURRENT LICENSE</div>
-        <h2>Current License</h2>
+        <div className="current-license-heading">
+          <div className="eyebrow">CURRENT LICENSE</div>
+          <h2>Current License</h2>
+        </div>
         <div className="license-stats">
           <span>
             <b>Plan</b>
@@ -1161,6 +1166,7 @@ function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | nul
             {licenseExpiryLabel(licenseState)}
           </span>
         </div>
+        <button className="secondary license-manage-button" onClick={onBuy}>Manage License</button>
       </section>
     </div>
   )
@@ -1330,11 +1336,10 @@ function InfoPage() {
       <section className="info-card telegram-card">
         <h2>Need help or want the latest updates?</h2>
         <p>
-          Follow the Flowpilot Telegram channel for announcements, guides, and
-          product updates.
+          Join the Flowpilot Telegram group for help, discussions, and updates.
         </p>
-        <button className="secondary" disabled={!TELEGRAM_CHANNEL_URL}>
-          Join Telegram Channel
+        <button className="secondary" onClick={() => void invoke("open_external_url", { url: TELEGRAM_CHANNEL_URL })}>
+          Join Telegram Group
         </button>
       </section>
     </div>
@@ -1446,6 +1451,9 @@ function Settings({
   error,
   onCheck,
   onUpdate,
+  licenseState,
+  onBuy,
+  releaseNotes,
 }: {
   profile: { name: string; avatar: string | null }
   onAvatarChange: (avatar: string) => void
@@ -1458,10 +1466,13 @@ function Settings({
   error: string
   onCheck: () => void
   onUpdate: () => void
+  licenseState: LicenseState | null
+  onBuy: () => void
+  releaseNotes: string[]
 }) {
   return (
     <div className="settings">
-      <section>
+      <section className="settings-profile-panel">
         <label className="setting-icon profile-avatar-input">
           {profile.avatar ? (
             <img src={profile.avatar} alt="Flowpilot profile" />
@@ -1501,7 +1512,7 @@ function Settings({
           <p>Local desktop profile used for your account manager.</p>
         </div>
       </section>
-      <section>
+      <section className="settings-privacy-panel">
         <div>
           <div className="eyebrow">PRIVACY & SECURITY</div>
           <h2>Your data stays local</h2>
@@ -1512,6 +1523,15 @@ function Settings({
         </div>
         <span className="badge">LOCAL ONLY</span>
       </section>
+      <div className="settings-group-heading license-heading">
+        <div className="eyebrow">LICENSE</div>
+        <h2>License and activation</h2>
+      </div>
+      <LicensePage licenseState={licenseState} onBuy={onBuy} />
+      <div className="settings-group-heading update-heading">
+        <div className="eyebrow">APPLICATION UPDATE</div>
+        <h2>Version and updates</h2>
+      </div>
       <UpdatePanel
         currentVersion={currentVersion}
         latestVersion={latestVersion}
@@ -1523,7 +1543,19 @@ function Settings({
         onCheck={onCheck}
         onUpdate={onUpdate}
       />
-      <section>
+      <section className="release-notes">
+        <div>
+          <div className="eyebrow">WHAT'S NEW</div>
+          {releaseNotes.length === 0 && <p>{phase === "upToDate" ? "You are using the latest version." : "Release notes will appear here after checking for updates."}</p>}
+          {releaseNotes.map((note) => <p key={note}>• {note}</p>)}
+        </div>
+      </section>
+      <div className="settings-group-heading info-heading">
+        <div className="eyebrow">INFO</div>
+        <h2>Using Flowpilot</h2>
+      </div>
+      <InfoPage />
+      <section className="settings-about-panel">
         <div>
           <div className="eyebrow">ABOUT</div>
           <h2>

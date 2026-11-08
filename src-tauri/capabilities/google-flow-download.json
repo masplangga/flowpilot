@@ -13,10 +13,12 @@
       "https://migoo.ai",
       "https://migoo.ai/*",
       "https://gemini.google.com",
-      "https://gemini.google.com/*"
+      "https://gemini.google.com/*",
+      "https://chatgpt.com",
+      "https://chatgpt.com/*"
     ]
   },
-  "webviews": ["google-flow-*", "dola-*", "migoo-*", "gemini-*"],
+  "webviews": ["google-flow-*", "dola-*", "migoo-*", "gemini-*", "chatgpt-*"],
   "permissions": [
     "allow-begin-blob-download",
     "allow-write-blob-download-chunk",

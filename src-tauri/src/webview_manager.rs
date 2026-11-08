@@ -1,17 +1,28 @@
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex};
 
 use tauri::path::BaseDirectory;
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
+use tauri::{AppHandle, Manager, Runtime, WebviewUrl, Window};
 #[cfg(windows)]
 use webview2_com::{DownloadStartingEventHandler, take_pwstr};
 #[cfg(windows)]
-use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_4, ICoreWebView2DownloadStartingEventArgs};
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_4, ICoreWebView2Deferral, ICoreWebView2DownloadStartingEventArgs};
 #[cfg(windows)]
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
+#[cfg(windows)]
+use tauri_plugin_dialog::DialogExt;
+
+#[cfg(windows)]
+thread_local! {
+    static CHATGPT_DOWNLOADS: RefCell<HashMap<u64, (ICoreWebView2DownloadStartingEventArgs, ICoreWebView2Deferral)>> = RefCell::new(HashMap::new());
+}
+#[cfg(windows)]
+static CHATGPT_DOWNLOAD_ID: AtomicU64 = AtomicU64::new(1);
 
 const GOOGLE_FLOW_URL: &str = "https://flow.google/";
 const STORYBOARD_URL: &str = "https://flow.google.com/shared/tool/c66ec783-8729-4035-9934-b7f48907365c";
@@ -85,6 +96,7 @@ const GEMINI_TTS_BRANDING_SCRIPT: &str = r#"(() => {
 const MIGOO_URL: &str = "https://migoo.ai/";
 const GEMINI_URL: &str = "https://gemini.google.com/app";
 const SUNO_URL: &str = "https://suno.com/";
+const CHATGPT_URL: &str = "https://chatgpt.com/";
 const GEMINI_TTS_URL: &str = "https://share.gemini.google/jLVZLHqihx0e";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
@@ -115,11 +127,46 @@ fn is_allowed_suno_host(host: &str) -> bool {
     )
 }
 
+fn is_allowed_chatgpt_auth_host(host: &str) -> bool {
+    matches!(
+        host,
+        "chatgpt.com"
+            | "www.chatgpt.com"
+            | "auth.openai.com"
+            | "auth0.openai.com"
+            | "openai.com"
+            | "www.openai.com"
+            | "accounts.google.com"
+            | "accounts.google.co.id"
+            | "google.com"
+            | "www.google.com"
+            | "consent.google.com"
+            | "appleid.apple.com"
+            | "login.microsoftonline.com"
+            | "microsoftonline.com"
+    )
+}
+
 #[cfg(windows)]
 fn extension_for_mime(mime: &str) -> Option<&'static str> {
     match mime.trim().to_ascii_lowercase().split(';').next().unwrap_or("") {
         "video/mp4" => Some("mp4"),
         "video/webm" => Some("webm"),
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        "image/svg+xml" => Some("svg"),
+        "application/pdf" => Some("pdf"),
+        "application/zip" | "application/x-zip-compressed" => Some("zip"),
+        "application/json" => Some("json"),
+        "text/plain" => Some("txt"),
+        "text/csv" => Some("csv"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" | "audio/x-wav" => Some("wav"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => Some("pptx"),
         _ => None,
     }
 }
@@ -141,8 +188,8 @@ fn attach_google_flow_download_handler(webview: &ICoreWebView2) -> Result<(), St
                         std::path::Path::new(&path).file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .filter(|name| !name.is_empty())
-                            .unwrap_or_else(|| "flowpilot-download".into())
-                    } else { "flowpilot-download".into() };
+                            .unwrap_or_else(|| "download".into())
+                    } else { "download".into() };
                     let mime_type = args.DownloadOperation().ok().and_then(|operation| {
                         let mut mime = PWSTR::null();
                         if operation.MimeType(&mut mime).is_ok() {
@@ -184,6 +231,115 @@ fn attach_google_flow_download_handler(webview: &ICoreWebView2) -> Result<(), St
         ).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn attach_chatgpt_download_handler<R: Runtime>(
+    webview: &ICoreWebView2,
+    app: AppHandle<R>,
+    parent_window: Window<R>,
+) -> Result<(), String> {
+    let webview4 = webview.cast::<ICoreWebView2_4>().map_err(|e| e.to_string())?;
+    let mut token = 0;
+    unsafe {
+        webview4.add_DownloadStarting(
+            &DownloadStartingEventHandler::create(Box::new(
+                move |_, args: Option<ICoreWebView2DownloadStartingEventArgs>| {
+                    let Some(args) = args else { return Ok(()); };
+                    let deferral = args.GetDeferral()?;
+                    args.SetHandled(true)?;
+
+                    let mut suggested = PWSTR::null();
+                    let mut filename = if args.ResultFilePath(&mut suggested).is_ok() {
+                        let path = take_pwstr(suggested);
+                        std::path::Path::new(&path).file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| "download".into())
+                    } else {
+                        "download".into()
+                    };
+                    let mime_type = args.DownloadOperation().ok().and_then(|operation| {
+                        let mut mime = PWSTR::null();
+                        if operation.MimeType(&mut mime).is_ok() {
+                            Some(take_pwstr(mime))
+                        } else {
+                            None
+                        }
+                    });
+                    if std::path::Path::new(&filename).extension().is_none() {
+                        if let Some(extension) = mime_type.as_deref().and_then(extension_for_mime) {
+                            filename.push('.');
+                            filename.push_str(extension);
+                        }
+                    }
+                    let original_extension = std::path::Path::new(&filename)
+                        .extension()
+                        .map(|extension| extension.to_os_string());
+
+                    let request_id = CHATGPT_DOWNLOAD_ID.fetch_add(1, Ordering::Relaxed);
+                    CHATGPT_DOWNLOADS.with(|downloads| {
+                        downloads.borrow_mut().insert(request_id, (args, deferral));
+                    });
+                    let app = app.clone();
+                    let parent_window = parent_window.clone();
+                    app.dialog()
+                        .file()
+                        .set_parent(&parent_window)
+                        .set_title("Save downloaded file")
+                        .set_file_name(filename)
+                        .save_file(move |selected| {
+                            let destination = selected.and_then(|path| path.into_path().ok());
+                            if let Err(error) = parent_window.run_on_main_thread(move || {
+                                finish_chatgpt_download(request_id, destination, original_extension);
+                            }) {
+                                eprintln!("[flowpilot-download] unable to resume ChatGPT download: {error}");
+                            }
+                        });
+                    Ok(())
+                },
+            )),
+            &mut token,
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn finish_chatgpt_download(
+    request_id: u64,
+    destination: Option<PathBuf>,
+    original_extension: Option<std::ffi::OsString>,
+) {
+    CHATGPT_DOWNLOADS.with(|downloads| {
+        let Some((args, deferral)) = downloads.borrow_mut().remove(&request_id) else {
+            return;
+        };
+        unsafe {
+            match destination {
+                Some(mut destination) => {
+                    if destination.extension().is_none() {
+                        if let Some(extension) = original_extension {
+                            destination.set_extension(extension);
+                        }
+                    }
+                    let native_path = HSTRING::from(destination.as_os_str());
+                    if let Err(error) = args.SetResultFilePath(PCWSTR(native_path.as_ptr())) {
+                        eprintln!("[flowpilot-download] unable to set Save As path: {error}");
+                        let _ = args.SetCancel(true);
+                    } else {
+                        let _ = args.SetCancel(false);
+                    }
+                }
+                None => {
+                    let _ = args.SetCancel(true);
+                }
+            }
+            if let Err(error) = deferral.Complete() {
+                eprintln!("[flowpilot-download] unable to complete download prompt: {error}");
+            }
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -264,7 +420,7 @@ impl Default for WebviewManager {
 }
 
 fn webview_label(account_id: &str, provider: Option<&str>) -> String {
-    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("suno") => "suno", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("suno") => "suno", Some("chatgpt") => "chatgpt", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
 }
 
 fn touch_webview(state: &WebviewManager, label: &str) -> Result<(), String> {
@@ -360,6 +516,26 @@ fn profile_path<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> Result<Path
     Ok(profile)
 }
 
+fn profile_path_for_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: &str,
+    provider: &str,
+) -> Result<PathBuf, String> {
+    if provider != "chatgpt" {
+        return profile_path(app, account_id);
+    }
+    validate_account_id(account_id)?;
+    let root = app
+        .path()
+        .resolve("webview-profiles", BaseDirectory::AppLocalData)
+        .map_err(|error| error.to_string())?;
+    let profile = root.join("chatgpt").join(account_id);
+    if !profile.starts_with(&root) {
+        return Err("invalid account profile path".to_string());
+    }
+    Ok(profile)
+}
+
 fn validate_bounds(x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     if ![x, y, width, height].iter().all(|value| value.is_finite())
         || x < 0.0
@@ -415,12 +591,13 @@ pub fn open<R: Runtime>(
             "migoo" => MIGOO_URL,
             "gemini" => GEMINI_URL,
             "suno" => SUNO_URL,
+            "chatgpt" => CHATGPT_URL,
             "gemini-tts" => GEMINI_TTS_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         };
         let should_navigate = match provider.as_str() {
-            "storyboard" | "gemini-tts" | "suno" => force_navigation,
+            "storyboard" | "gemini-tts" | "suno" | "chatgpt" => force_navigation,
             _ => true,
         };
         let mode_script = match provider.as_str() {
@@ -483,7 +660,10 @@ pub fn open<R: Runtime>(
         }
     }
 
-    let profile = profile_path(app, &account_id)?;
+    let profile = profile_path_for_provider(app, &account_id, &provider)?;
+    if let Some(parent) = profile.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     let initial_url = if provider == "gemini-tts" {
         load_tts_resume_url(app, &account_id)?.unwrap_or_else(|| GEMINI_TTS_URL.to_string())
     } else {
@@ -492,6 +672,7 @@ pub fn open<R: Runtime>(
             "migoo" => MIGOO_URL,
             "gemini" => GEMINI_URL,
             "suno" => SUNO_URL,
+            "chatgpt" => CHATGPT_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         }
@@ -508,12 +689,18 @@ pub fn open<R: Runtime>(
         "gemini" => crate::webview_download_bridge::GEMINI_BLOB_SCRIPT.to_string(),
         "gemini-tts" => GEMINI_TTS_BRANDING_SCRIPT.to_string(),
         "suno" => String::new(),
+        "chatgpt" => format!(
+            "{}\n{}",
+            crate::webview_download_bridge::INIT_SCRIPT,
+            crate::webview_download_bridge::CHATGPT_IMAGE_DOWNLOAD_SCRIPT,
+        ),
         _ => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
     };
 
     let persist_tts_url = provider == "gemini-tts";
     let allow_google_popups = persist_tts_url;
     let allow_suno_popups = provider == "suno";
+    let allow_chatgpt_popups = provider == "chatgpt";
     let restrict_suno_navigation = allow_suno_popups;
     let tts_login_seen = Arc::new(AtomicBool::new(false));
     let tts_redirect_target = initial_url.clone();
@@ -612,6 +799,11 @@ pub fn open<R: Runtime>(
                     let _ = (popup_app, popup_account_id, features);
                     tauri::webview::NewWindowResponse::Deny
                 }
+            } else if allow_chatgpt_popups
+                && url.scheme() == "https"
+                && is_allowed_chatgpt_auth_host(host)
+            {
+                tauri::webview::NewWindowResponse::Allow
             } else {
                 tauri::webview::NewWindowResponse::Deny
             }
@@ -625,7 +817,20 @@ pub fn open<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
-    if matches!(provider.as_str(), "google-flow" | "storyboard" | "gemini") {
+    if provider == "chatgpt" {
+        let dialog_app = app.clone();
+        let dialog_parent = window.clone();
+        webview.with_webview(move |platform| {
+            match unsafe { platform.controller().CoreWebView2() } {
+                Ok(native) => {
+                    if let Err(error) = attach_chatgpt_download_handler(&native, dialog_app, dialog_parent) {
+                        eprintln!("[flowpilot-download] failed to attach ChatGPT Save As handler: {error}");
+                    }
+                }
+                Err(error) => eprintln!("[flowpilot-download] unable to access ChatGPT WebView2: {error}"),
+            }
+        }).map_err(|e| e.to_string())?;
+    } else if matches!(provider.as_str(), "google-flow" | "storyboard" | "gemini") {
         let is_gemini = provider.as_str() == "gemini";
         webview.with_webview(move |platform| {
             if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
@@ -634,7 +839,9 @@ pub fn open<R: Runtime>(
                 } else {
                     attach_google_flow_download_handler(&native)
                 };
-                let _ = result;
+                if let Err(error) = result {
+                    eprintln!("[flowpilot-download] failed to attach download handler: {error}");
+                }
             }
         }).map_err(|e| e.to_string())?;
     }
@@ -729,6 +936,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         webview_label(&account_id, Some("migoo")),
         webview_label(&account_id, Some("gemini")),
         webview_label(&account_id, Some("suno")),
+        webview_label(&account_id, Some("chatgpt")),
         webview_label(&account_id, Some("gemini-tts")),
     ];
     for label in &labels {
@@ -767,17 +975,21 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         }
     }
 
-    let profile = profile_path(app, &account_id)?;
-    if !profile.exists() {
-        return Ok(true);
-    }
-    match std::fs::remove_dir_all(&profile) {
-        Ok(()) => Ok(true),
-        Err(error) => {
+    let profiles = [
+        profile_path(app, &account_id)?,
+        profile_path_for_provider(app, &account_id, "chatgpt")?,
+    ];
+    let mut cleaned = true;
+    for profile in profiles {
+        if !profile.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&profile) {
             eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
-            Ok(false)
+            cleaned = false;
         }
     }
+    Ok(cleaned)
 }
 
 #[cfg(test)]
@@ -819,5 +1031,7 @@ mod tests {
         assert_eq!(webview_label("account-id", Some("gemini-tts")), "flowpilot-tts-account-id");
         assert_eq!(webview_label("account-id", Some("gemini")), "gemini-account-id");
         assert_eq!(webview_label("account-id", Some("suno")), "suno-account-id");
+        assert_eq!(webview_label("account-id", Some("chatgpt")), "chatgpt-account-id");
     }
+
 }

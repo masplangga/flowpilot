@@ -99,7 +99,11 @@ async fn remove_google_flow_account(
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
-    if url != "https://tokotelegram.com/toko/flowpilot" {
+    if !matches!(
+        url.as_str(),
+        "https://tokotelegram.com/toko/flowpilot"
+            | "https://t.me/+Z-7gujGSHxNiY2Rl"
+    ) {
         return Err("unsupported external URL".to_string());
     }
     std::process::Command::new("cmd")
@@ -133,8 +137,8 @@ fn expand_main_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    dialog_thread_experiment::init();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_manager::WebviewManager::default())

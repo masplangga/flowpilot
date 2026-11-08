@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { loadAccountsWithBridge, saveAccountsWithBridge } from "./account-store-core.js"
 
 export type StoredAccount = {
-  provider?: "google-flow" | "google_flow" | "dola" | "migoo" | "gemini" | "suno"
+  provider?: "google-flow" | "google_flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt"
   id: string
   name: string
   email: string | null

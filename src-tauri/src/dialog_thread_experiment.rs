@@ -1,29 +1,30 @@
-use std::{path::PathBuf, sync::{mpsc, OnceLock}};
+use std::{path::PathBuf, sync::mpsc};
 
-struct Request { folder: Option<PathBuf>, filename: String, reply: mpsc::SyncSender<Option<PathBuf>> }
-static CHANNEL: OnceLock<mpsc::SyncSender<Request>> = OnceLock::new();
+use tauri::{Runtime, Window};
+use tauri_plugin_dialog::DialogExt;
 
-pub fn init() {
-    CHANNEL.get_or_init(|| {
-        let (sender, receiver) = mpsc::sync_channel::<Request>(1);
-        std::thread::Builder::new().name("flowpilot-dialog-experiment".into()).spawn(move || {
-            #[cfg(windows)] unsafe { let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED); }
-            while let Ok(request) = receiver.recv() {
-                let mut dialog = rfd::FileDialog::new().set_file_name(&request.filename);
-                if let Some(folder) = request.folder { dialog = dialog.set_directory(folder); }
-                let result = dialog.save_file();
-                let _ = request.reply.send(result);
-            }
-        }).expect("dialog experiment thread");
-        sender
-    });
-}
-
-pub async fn request_dialog(folder: Option<PathBuf>, filename: String) -> Result<Option<PathBuf>, String> {
-    init();
+/// Opens a parented native Save As dialog and waits without blocking Tauri's UI thread.
+pub async fn request_dialog<R: Runtime>(
+    window: Window<R>,
+    folder: Option<PathBuf>,
+    filename: String,
+) -> Result<Option<PathBuf>, String> {
     let (reply, receiver) = mpsc::sync_channel(1);
-    CHANNEL.get().unwrap().send(Request { folder, filename, reply }).map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|e| e.to_string())).await.map_err(|e| e.to_string())?
+    let mut dialog = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Save downloaded file")
+        .set_file_name(filename);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
+    dialog.save_file(move |selected| {
+        let path = selected.and_then(|value| value.into_path().ok());
+        let _ = reply.send(path);
+    });
+
+    tauri::async_runtime::spawn_blocking(move || receiver.recv().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
 }
-
-
