@@ -9,7 +9,7 @@ import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 import { canPersistAccountList } from "./services/account-store-core.js"
 
-type Provider = "google-flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt"
+type Provider = "google-flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt" | "claude" | "elevenlabs"
 type Account = {
   provider: Provider
   id: string
@@ -35,8 +35,8 @@ const PROMPT_CARD_COLORS = [{ id: "default", label: "Default / Dark" }, { id: "b
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = "https://t.me/+Z-7gujGSHxNiY2Rl"
 const APP_VERSION = packageJson.version
-const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : provider === "suno" ? "Suno" : provider === "chatgpt" ? "ChatGPT" : "Google Flow"
-const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : provider === "suno" ? "/suno.jpg" : provider === "chatgpt" ? "/chatgpt.jpg" : (avatarUrl || "/google-flow.png")
+const providerLabel = (provider: Provider) => provider === "dola" ? "Dola" : provider === "migoo" ? "Migoo" : provider === "gemini" ? "Gemini" : provider === "suno" ? "Suno" : provider === "chatgpt" ? "ChatGPT" : provider === "claude" ? "Claude" : provider === "elevenlabs" ? "ElevenLabs" : "Google Flow"
+const providerAvatar = (provider: Provider, avatarUrl: string | null) => provider === "dola" ? "/dola.png" : provider === "migoo" ? "/unnamed.png" : provider === "gemini" ? "/gemini.webp" : provider === "suno" ? "/suno.jpg" : provider === "chatgpt" ? "/chatgpt.jpg" : provider === "claude" ? "/claude-ai-icon.webp" : provider === "elevenlabs" ? "/elevenlabs.png" : (avatarUrl || "/google-flow.png")
 type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
 const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
 const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
@@ -668,6 +668,8 @@ export default function App() {
                 <button className={provider === "gemini" ? "active" : ""} onClick={() => setProvider("gemini")}>Gemini</button>
                 <button className={provider === "suno" ? "active" : ""} onClick={() => setProvider("suno")}>Suno</button>
                 <button className={provider === "chatgpt" ? "active" : ""} onClick={() => setProvider("chatgpt")}>ChatGPT</button>
+                <button className={provider === "claude" ? "active" : ""} onClick={() => setProvider("claude")}>Claude</button>
+                <button className={provider === "elevenlabs" ? "active" : ""} onClick={() => setProvider("elevenlabs")}>ElevenLabs</button>
               </div>
             )}
           </div>
@@ -777,7 +779,7 @@ export default function App() {
             <div className="dialog add-account-dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
               <p>Choose a provider and enter an account name.</p>
-              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button><button className={newAccountProvider === "suno" ? "active" : ""} onClick={() => setNewAccountProvider("suno")}>Suno</button><button className={newAccountProvider === "chatgpt" ? "active" : ""} onClick={() => setNewAccountProvider("chatgpt")}>ChatGPT</button></div>
+              <div className="provider-tabs"><button className={newAccountProvider === "google-flow" ? "active" : ""} onClick={() => setNewAccountProvider("google-flow")}>Google Flow</button><button className={newAccountProvider === "dola" ? "active" : ""} onClick={() => setNewAccountProvider("dola")}>Dola</button><button className={newAccountProvider === "gemini" ? "active" : ""} onClick={() => setNewAccountProvider("gemini")}>Gemini</button><button className={newAccountProvider === "suno" ? "active" : ""} onClick={() => setNewAccountProvider("suno")}>Suno</button><button className={newAccountProvider === "chatgpt" ? "active" : ""} onClick={() => setNewAccountProvider("chatgpt")}>ChatGPT</button><button className={newAccountProvider === "claude" ? "active" : ""} onClick={() => setNewAccountProvider("claude")}>Claude</button><button className={newAccountProvider === "elevenlabs" ? "active" : ""} onClick={() => setNewAccountProvider("elevenlabs")}>ElevenLabs</button></div>
               <input
                 autoFocus
                 value={newAccountName}
@@ -1408,7 +1410,7 @@ function Card({
           )}
         </div>
       </div>
-      <div className="avatar large">
+      <div className={`avatar large provider-avatar-${a.provider}`}>
         <img
           src={providerAvatar(a.provider, a.avatarUrl)}
           alt={`${providerLabel(a.provider)} account`}
@@ -1432,7 +1434,7 @@ function DragPreview({ account, point, offset }: { account: Account | null; poin
     <div className="custom-drag-layer" aria-hidden="true">
       <article className="drag-preview-card" style={{ transform: `translate3d(${point.x - offset.x}px, ${point.y - offset.y}px, 0) scale(1.04) rotate(2deg)` }}>
         <div className="card-top"><span className={`star ${account.favorite ? "fav" : ""}`}>{account.favorite ? "★" : "☆"}</span><span className="more">•••</span></div>
-        <div className="avatar large"><img src={providerAvatar(account.provider, account.avatarUrl)} alt="" /></div>
+        <div className={`avatar large provider-avatar-${account.provider}`}><img src={providerAvatar(account.provider, account.avatarUrl)} alt="" /></div>
         <h2>{account.name}</h2>
         <div className="primary wide">Open {providerLabel(account.provider)} <span>→</span></div>
       </article>
@@ -1636,10 +1638,14 @@ function FlowShell({
     container.addEventListener("flowpilot-webview-ready", onReady)
     const observer = new ResizeObserver(syncBounds)
     observer.observe(container)
+    window.addEventListener("resize", syncBounds)
+    window.addEventListener("scroll", syncBounds, true)
     syncBounds()
     return () => {
       observer.disconnect()
       container.removeEventListener("flowpilot-webview-ready", onReady)
+      window.removeEventListener("resize", syncBounds)
+      window.removeEventListener("scroll", syncBounds, true)
     }
   }, [navigatorOpen, fullView, account.id, provider, storyboard, tts])
   useEffect(() => {

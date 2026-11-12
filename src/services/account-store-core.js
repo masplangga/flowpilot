@@ -1,5 +1,5 @@
 const STORAGE_KEY = "flowpilot-accounts"
-const ALLOWED_PROVIDERS = ["google-flow", "google_flow", "dola", "migoo", "gemini", "suno", "chatgpt"]
+const ALLOWED_PROVIDERS = ["google-flow", "google_flow", "dola", "migoo", "gemini", "suno", "chatgpt", "claude", "elevenlabs"]
 
 /** @param {unknown} value */
 export function isStoredAccount(value) {

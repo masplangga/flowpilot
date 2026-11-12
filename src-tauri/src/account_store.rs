@@ -35,7 +35,7 @@ fn valid_account(value: &serde_json::Value) -> bool {
             provider.is_empty()
                 || matches!(
                     provider.as_str(),
-                    "google-flow" | "google_flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt"
+                    "google-flow" | "google_flow" | "dola" | "migoo" | "gemini" | "suno" | "chatgpt" | "claude" | "elevenlabs"
                 )
         }
         _ => false,

@@ -97,6 +97,8 @@ const MIGOO_URL: &str = "https://migoo.ai/";
 const GEMINI_URL: &str = "https://gemini.google.com/app";
 const SUNO_URL: &str = "https://suno.com/";
 const CHATGPT_URL: &str = "https://chatgpt.com/";
+const CLAUDE_URL: &str = "https://claude.ai/";
+const ELEVENLABS_URL: &str = "https://elevenlabs.io/";
 const GEMINI_TTS_URL: &str = "https://share.gemini.google/jLVZLHqihx0e";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
@@ -136,6 +138,42 @@ fn is_allowed_chatgpt_auth_host(host: &str) -> bool {
             | "auth0.openai.com"
             | "openai.com"
             | "www.openai.com"
+            | "accounts.google.com"
+            | "accounts.google.co.id"
+            | "google.com"
+            | "www.google.com"
+            | "consent.google.com"
+            | "appleid.apple.com"
+            | "login.microsoftonline.com"
+            | "microsoftonline.com"
+    )
+}
+
+fn is_allowed_claude_auth_host(host: &str) -> bool {
+    matches!(
+        host,
+        "claude.ai"
+            | "www.claude.ai"
+            | "accounts.anthropic.com"
+            | "anthropic.com"
+            | "www.anthropic.com"
+            | "accounts.google.com"
+            | "accounts.google.co.id"
+            | "google.com"
+            | "www.google.com"
+            | "consent.google.com"
+            | "appleid.apple.com"
+            | "login.microsoftonline.com"
+            | "microsoftonline.com"
+    )
+}
+
+fn is_allowed_elevenlabs_auth_host(host: &str) -> bool {
+    matches!(
+        host,
+        "elevenlabs.io"
+            | "www.elevenlabs.io"
+            | "auth.elevenlabs.io"
             | "accounts.google.com"
             | "accounts.google.co.id"
             | "google.com"
@@ -420,7 +458,7 @@ impl Default for WebviewManager {
 }
 
 fn webview_label(account_id: &str, provider: Option<&str>) -> String {
-    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("suno") => "suno", Some("chatgpt") => "chatgpt", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
+    format!("{}-{account_id}", match provider { Some("dola") => "dola", Some("migoo") => "migoo", Some("gemini") => "gemini", Some("suno") => "suno", Some("chatgpt") => "chatgpt", Some("claude") => "claude", Some("elevenlabs") => "elevenlabs", Some("gemini-tts") => "flowpilot-tts", _ => WEBVIEW_LABEL_PREFIX })
 }
 
 fn touch_webview(state: &WebviewManager, label: &str) -> Result<(), String> {
@@ -521,7 +559,7 @@ fn profile_path_for_provider<R: Runtime>(
     account_id: &str,
     provider: &str,
 ) -> Result<PathBuf, String> {
-    if provider != "chatgpt" {
+    if provider != "chatgpt" && provider != "claude" && provider != "elevenlabs" {
         return profile_path(app, account_id);
     }
     validate_account_id(account_id)?;
@@ -529,7 +567,7 @@ fn profile_path_for_provider<R: Runtime>(
         .path()
         .resolve("webview-profiles", BaseDirectory::AppLocalData)
         .map_err(|error| error.to_string())?;
-    let profile = root.join("chatgpt").join(account_id);
+    let profile = root.join(provider).join(account_id);
     if !profile.starts_with(&root) {
         return Err("invalid account profile path".to_string());
     }
@@ -592,14 +630,15 @@ pub fn open<R: Runtime>(
             "gemini" => GEMINI_URL,
             "suno" => SUNO_URL,
             "chatgpt" => CHATGPT_URL,
+            "claude" => CLAUDE_URL,
+            "elevenlabs" => ELEVENLABS_URL,
             "gemini-tts" => GEMINI_TTS_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         };
-        let should_navigate = match provider.as_str() {
-            "storyboard" | "gemini-tts" | "suno" | "chatgpt" => force_navigation,
-            _ => true,
-        };
+        // Existing WebViews already own the last page for this account/provider.
+        // Only an explicit retry/initial storyboard navigation may reset it.
+        let should_navigate = force_navigation;
         let mode_script = match provider.as_str() {
             "storyboard" => Some(STORYBOARD_MODE_ON_SCRIPT),
             "google-flow" => Some(STORYBOARD_MODE_OFF_SCRIPT),
@@ -673,6 +712,8 @@ pub fn open<R: Runtime>(
             "gemini" => GEMINI_URL,
             "suno" => SUNO_URL,
             "chatgpt" => CHATGPT_URL,
+            "claude" => CLAUDE_URL,
+            "elevenlabs" => ELEVENLABS_URL,
             "storyboard" => STORYBOARD_URL,
             _ => GOOGLE_FLOW_URL,
         }
@@ -694,6 +735,8 @@ pub fn open<R: Runtime>(
             crate::webview_download_bridge::INIT_SCRIPT,
             crate::webview_download_bridge::CHATGPT_IMAGE_DOWNLOAD_SCRIPT,
         ),
+        "claude" => String::new(),
+        "elevenlabs" => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
         _ => crate::webview_download_bridge::INIT_SCRIPT.to_string(),
     };
 
@@ -701,6 +744,8 @@ pub fn open<R: Runtime>(
     let allow_google_popups = persist_tts_url;
     let allow_suno_popups = provider == "suno";
     let allow_chatgpt_popups = provider == "chatgpt";
+    let allow_claude_popups = provider == "claude";
+    let allow_elevenlabs_popups = provider == "elevenlabs";
     let restrict_suno_navigation = allow_suno_popups;
     let tts_login_seen = Arc::new(AtomicBool::new(false));
     let tts_redirect_target = initial_url.clone();
@@ -804,6 +849,16 @@ pub fn open<R: Runtime>(
                 && is_allowed_chatgpt_auth_host(host)
             {
                 tauri::webview::NewWindowResponse::Allow
+            } else if allow_claude_popups
+                && url.scheme() == "https"
+                && is_allowed_claude_auth_host(host)
+            {
+                tauri::webview::NewWindowResponse::Allow
+            } else if allow_elevenlabs_popups
+                && url.scheme() == "https"
+                && is_allowed_elevenlabs_auth_host(host)
+            {
+                tauri::webview::NewWindowResponse::Allow
             } else {
                 tauri::webview::NewWindowResponse::Deny
             }
@@ -817,14 +872,14 @@ pub fn open<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     #[cfg(windows)]
-    if provider == "chatgpt" {
+    if provider == "chatgpt" || provider == "claude" || provider == "elevenlabs" {
         let dialog_app = app.clone();
         let dialog_parent = window.clone();
         webview.with_webview(move |platform| {
             match unsafe { platform.controller().CoreWebView2() } {
                 Ok(native) => {
                     if let Err(error) = attach_chatgpt_download_handler(&native, dialog_app, dialog_parent) {
-                        eprintln!("[flowpilot-download] failed to attach ChatGPT Save As handler: {error}");
+                        eprintln!("[flowpilot-download] failed to attach native Save As handler: {error}");
                     }
                 }
                 Err(error) => eprintln!("[flowpilot-download] unable to access ChatGPT WebView2: {error}"),
@@ -937,6 +992,8 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
         webview_label(&account_id, Some("gemini")),
         webview_label(&account_id, Some("suno")),
         webview_label(&account_id, Some("chatgpt")),
+        webview_label(&account_id, Some("claude")),
+        webview_label(&account_id, Some("elevenlabs")),
         webview_label(&account_id, Some("gemini-tts")),
     ];
     for label in &labels {
@@ -1032,6 +1089,7 @@ mod tests {
         assert_eq!(webview_label("account-id", Some("gemini")), "gemini-account-id");
         assert_eq!(webview_label("account-id", Some("suno")), "suno-account-id");
         assert_eq!(webview_label("account-id", Some("chatgpt")), "chatgpt-account-id");
+        assert_eq!(webview_label("account-id", Some("elevenlabs")), "elevenlabs-account-id");
     }
 
 }
